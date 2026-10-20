@@ -69,6 +69,13 @@
                 label="Reservation Window End"
                 type="datetime-local"
               />
+              <BaseFormInput
+                  v-model.number="state.cbtfDurationMinutes"
+                  name="cbtfDurationMinutes"
+                  label="Exam Duration (minutes)"
+                  type="number"
+                  min="1"
+               />
             </div>
           </div>
 
@@ -172,6 +179,7 @@ interface AssignmentData {
   availableFrom: string | null
   acceptUntil: string | null
   isSchedulable?: boolean | null
+  cbtfDurationMinutes?: number | null
   scheduleWindowStart?: string | null
   scheduleWindowEnd?: string | null
   hasInterviews?: boolean | null
@@ -210,6 +218,7 @@ const emit = defineEmits<{
       hasInterviews?: boolean | null
       interviewWindowStart?: string | null
       interviewWindowEnd?: string | null
+      cbtfDurationMinutes?: number | null
     }
   ]
   created: []
@@ -235,6 +244,7 @@ const state = reactive({
   isSchedulable: false,
   scheduleWindowStart: '',
   scheduleWindowEnd: '',
+  cbtfDurationMinutes: 60,
   hasInterviews: false,
   interviewWindowStart: '',
   interviewWindowEnd: ''
@@ -283,6 +293,7 @@ watch(
       state.isSchedulable = !!assignment.isSchedulable
       state.scheduleWindowStart = toLocalDatetime(assignment.scheduleWindowStart ?? null)
       state.scheduleWindowEnd = toLocalDatetime(assignment.scheduleWindowEnd ?? null)
+      state.cbtfDurationMinutes = assignment.cbtfDurationMinutes ?? 60
       state.hasInterviews = !!assignment.hasInterviews
       state.interviewWindowStart = toLocalDatetime(assignment.interviewWindowStart ?? null)
       state.interviewWindowEnd = toLocalDatetime(assignment.interviewWindowEnd ?? null)
@@ -305,6 +316,7 @@ watch(
       state.hasInterviews = false
       state.interviewWindowStart = ''
       state.interviewWindowEnd = ''
+      state.cbtfDurationMinutes = 60
       selectedPassTypeIds.value = []
     }
   },
@@ -328,6 +340,9 @@ const handleSubmit = async () => {
       scheduleWindowEnd:
         state.isSchedulable && state.scheduleWindowEnd
           ? new Date(state.scheduleWindowEnd).toISOString()
+          : null,
+      cbtfDurationMinutes: state.isSchedulable
+          ? state.cbtfDurationMinutes
           : null,
       hasInterviews: state.hasInterviews,
       interviewWindowStart:

@@ -14,6 +14,7 @@ export type { Assignment } from '@prisma/client'
 
 export const assignmentRowSchema = z.object({
   id: z.string(),
+  cbtfDurationMinutes: z.number().int().positive().nullable().optional(),
   resourceLinkId: z.string().nullable(),
   title: z.string().nullable(),
   canvasAssignmentId: z.string().nullable(),
@@ -68,6 +69,7 @@ export type AssignmentRow = z.infer<typeof assignmentRowSchema>
 
 export const createAssignmentSchema = z.object({
   title: z.string().nullable().optional(),
+  cbtfDurationMinutes: z.number().int().positive().nullable().optional(),
   canvasAssignmentId: z.string().nullable().optional(),
   courseId: z.string().min(1, 'Course is required'),
   dueDate: z.string().nullable().optional(),
@@ -84,6 +86,7 @@ export const createAssignmentSchema = z.object({
 
 export const updateAssignmentSchema = z.object({
   title: z.string().nullable().optional(),
+  cbtfDurationMinutes: z.number().int().positive().nullable().optional(),
   canvasAssignmentId: z.string().nullable().optional(),
   dueDate: z.string().nullable().optional(),
   availableFrom: z.string().nullable().optional(),
@@ -128,5 +131,6 @@ export const initialAssignmentState: Omit<CreateAssignmentData, 'courseId'> = {
   acceptUntil: '',
   hasInterviews: false,
   interviewWindowStart: null,
+  cbtfDurationMinutes: null,
   interviewWindowEnd: null
 }
