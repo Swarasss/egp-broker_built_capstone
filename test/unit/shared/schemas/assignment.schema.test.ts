@@ -48,3 +48,28 @@ describe('Assignment Shared Schemas', () => {
     expect(updateAssignmentSchema.safeParse(updateData).success).toBe(true)
   })
 })
+
+// Use full schemas so an accidentally omitted duration property cannot pass by stripping it.
+describe.each([
+  ['row', assignmentRowSchema, {
+    id: 'a1', resourceLinkId: null, title: null, canvasAssignmentId: null,
+    courseLabel: null, courseTitle: null, dueDate: null, availableFrom: null,
+    acceptUntil: null, createdAt: '2026-10-28T00:00:00.000Z'
+  }],
+  ['create', createAssignmentSchema, { courseId: 'c1' }],
+  ['update', updateAssignmentSchema, {}]
+] as const)('%s CBTF duration validation', (_name, schema, base) => {
+  it.each([20, 37, 120, null])('accepts and preserves %s', (duration) => {
+    expect(schema.parse({ ...base, cbtfDurationMinutes: duration })).toHaveProperty(
+      'cbtfDurationMinutes', duration
+    )
+  })
+
+  it('accepts omission without supplying a duration', () => {
+    expect(schema.parse(base)).not.toHaveProperty('cbtfDurationMinutes')
+  })
+
+  it.each([0, -1, 1.5, '20'])('rejects %s', (duration) => {
+    expect(schema.safeParse({ ...base, cbtfDurationMinutes: duration }).success).toBe(false)
+  })
+})

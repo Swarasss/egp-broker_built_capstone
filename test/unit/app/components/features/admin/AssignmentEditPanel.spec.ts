@@ -143,3 +143,62 @@ describe('AssignmentEditPanel.vue - GTA Grading Interviews', () => {
     )
   })
 })
+
+describe('AssignmentEditPanel.vue - CBTF duration', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  function mountPanel() {
+    return mount(AssignmentEditPanel, {
+      props: {
+        open: true, courseId: 'c1', passTypes: [],
+        assignment: {
+          id: 'a1', title: 'Exam', canvasAssignmentId: null,
+          dueDate: null, availableFrom: null, acceptUntil: null,
+          isSchedulable: true, cbtfDurationMinutes: 37
+        }
+      },
+      global: { stubs: globalStubs }
+    })
+  }
+
+  it('loads an existing custom duration and submits an edited numeric duration', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    const input = wrapper.get<HTMLInputElement>('input[name="cbtfDurationMinutes"]')
+    expect(input.element.value).toBe('37')
+    await input.setValue('120')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockFetch).toHaveBeenCalledWith('/api/me/assignments/a1', {
+      method: 'PATCH', body: expect.objectContaining({ cbtfDurationMinutes: 120 })
+    })
+    wrapper.unmount()
+  })
+
+  it('resets a previous custom duration to 60 in create mode', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.setProps({ open: false })
+    await wrapper.setProps({ assignment: null, open: true })
+    await wrapper.findAll('input[role="switch"]')[0]!.setValue(true)
+    expect(wrapper.get<HTMLInputElement>('input[name="cbtfDurationMinutes"]').element.value).toBe('60')
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockFetch).toHaveBeenCalledWith('/api/me/assignments', {
+      method: 'POST', body: expect.objectContaining({ courseId: 'c1', cbtfDurationMinutes: 60 })
+    })
+    wrapper.unmount()
+  })
+
+  it('submits null when CBTF is disabled', async () => {
+    const wrapper = mountPanel()
+    await flushPromises()
+    await wrapper.findAll('input[role="switch"]')[0]!.setValue(false)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockFetch).toHaveBeenCalledWith('/api/me/assignments/a1', {
+      method: 'PATCH', body: expect.objectContaining({ isSchedulable: false, cbtfDurationMinutes: null })
+    })
+    wrapper.unmount()
+  })
+})

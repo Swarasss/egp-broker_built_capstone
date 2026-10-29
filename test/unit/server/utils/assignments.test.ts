@@ -4,6 +4,7 @@ import {
   syncPassTypeEligibility,
   recalculateAssignmentEligibleDates,
   getCourseAssignments,
+  createAssignment,
   setManualEligibilities,
   matchLtiToolForLaunchUrl
 } from '../../../../server/utils/assignments'
@@ -15,6 +16,7 @@ vi.mock('@@/server/utils/db', () => ({
     assignment: {
       findUnique: vi.fn(),
       findMany: vi.fn(),
+      create: vi.fn(),
       update: vi.fn()
     },
     passType: {
@@ -45,6 +47,19 @@ vi.mock('@@/server/utils/overrides', () => ({
 describe('Assignment Eligibility Logic', () => {
   beforeEach(() => {
     vi.clearAllMocks()
+  })
+
+  it('passes a custom CBTF duration to Prisma when creating an assignment', async () => {
+    const assignment = { id: 'a1', cbtfDurationMinutes: 37 }
+    vi.mocked(prisma.assignment.create).mockResolvedValueOnce(assignment as any)
+    vi.mocked(prisma.assignment.findUnique).mockResolvedValueOnce(null)
+
+    const result = await createAssignment({ courseId: 'c1', cbtfDurationMinutes: 37 })
+
+    expect(prisma.assignment.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ courseId: 'c1', cbtfDurationMinutes: 37 })
+    })
+    expect(result).toEqual(assignment)
   })
 
   describe('recalculateAssignmentEligibleDates', () => {
@@ -216,6 +231,7 @@ describe('Assignment Eligibility Logic', () => {
           id: 'a1',
           resourceLinkId: 'rl1',
           title: 'A1',
+          cbtfDurationMinutes: 37,
           canvasAssignmentId: 'c1',
           toolId: 'tool-1',
           tool: { id: 'tool-1', name: 'CodeWorkout', supportsPassport: true },
@@ -244,6 +260,7 @@ describe('Assignment Eligibility Logic', () => {
         id: 'a1',
         resourceLinkId: 'rl1',
         title: 'A1',
+        cbtfDurationMinutes: 37,
         canvasAssignmentId: 'c1',
         courseLabel: 'C1',
         courseTitle: 'Course 1',

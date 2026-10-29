@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
+import assignmentsPatch from '../../../../../server/api/me/assignments/[id].patch'
 import assignmentsGet from '../../../../../server/api/me/assignments.get'
 import { getCourseAssignments } from '../../../../../server/utils/assignments'
 import prisma from '@@/server/utils/db'
@@ -9,6 +10,7 @@ vi.mock('../../../../../server/utils/assignments', () => ({
 
 vi.mock('@@/server/utils/db', () => ({
   default: {
+    assignment: { findUnique: vi.fn(), update: vi.fn() },
     user: {
       findUnique: vi.fn()
     }
@@ -37,6 +39,8 @@ describe('API: Me Assignments GET', () => {
     return {
       ...actual,
       defineEventHandler: (handler: any) => handler,
+      getRouterParam: () => 'a1',
+      readValidatedBody: async (event: any, parse: any) => parse(event.body),
       createError: (opts: any) => opts
     }
   })
@@ -77,5 +81,33 @@ describe('API: Me Assignments GET', () => {
     )
 
     expect(getCourseAssignments).not.toHaveBeenCalled()
+  })
+})
+
+describe('API: Me Assignments PATCH CBTF duration', () => {
+  beforeEach(() => {
+    vi.clearAllMocks()
+    vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
+      id: 'a1', courseId: 'c1', cbtfDurationMinutes: 120
+    } as any)
+    vi.mocked(prisma.user.findUnique).mockResolvedValue({
+      enrollments: [{ courseId: 'c1', role: 'TEACHER' }]
+    } as any)
+    vi.mocked(prisma.assignment.update).mockResolvedValue({ id: 'a1' } as any)
+  })
+
+  it.each([
+    ['custom duration', { cbtfDurationMinutes: 37 }, 37],
+    ['explicit null', { cbtfDurationMinutes: null }, null],
+    ['omission preserves existing duration', {}, undefined]
+  ])('supports %s', async (_name, body, expected) => {
+    await assignmentsPatch({
+      context: { user: { id: 'u1', globalRole: 'USER' } }, body
+    } as any)
+
+    expect(prisma.assignment.update).toHaveBeenCalledWith({
+      where: { id: 'a1' },
+      data: expect.objectContaining({ cbtfDurationMinutes: expected })
+    })
   })
 })
