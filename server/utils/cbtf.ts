@@ -185,7 +185,8 @@ export function generateAvailableSlotsForDate(
   targetDate: Date,
   hours: FacilityOperatingHoursResult,
   existingReservations: { startTime: Date; endTime: Date; seatNumber: number }[],
-  timeZone: string = facility.timezone || DEFAULT_CBTF_TIMEZONE
+  timeZone: string = facility.timezone || DEFAULT_CBTF_TIMEZONE,
+  durationMinutes: number = 60
 ): SlotAvailability[] {
   if (!hours.isOpen || !hours.openTime || !hours.closeTime) {
     return []
@@ -198,9 +199,9 @@ export function generateAvailableSlotsForDate(
   const availableSlots: SlotAvailability[] = []
 
   const stepMs = 5 * 60 * 1000 // 5 minutes
-  const durationMs = 60 * 60 * 1000 // 1 hour (60 minutes)
+  const durationMs = durationMinutes * 60 * 1000
 
-  // Facility must remain open for at least 1 hour after slot start time
+  // Facility must remain open for the full exam duration after slot start time
   const latestStartMs = closeDateTime.getTime() - durationMs
 
   let currentMs = openDateTime.getTime()
@@ -388,7 +389,8 @@ export async function getRecommendedDaysAndSlots(
   studentWindow: StudentSchedulingWindow,
   preferenceOrBlockId?: string,
   selectedDateStr?: string,
-  tx: PrismaClient | typeof prisma = prisma
+  tx: PrismaClient | typeof prisma = prisma,
+  durationMinutes: number = 60
 ): Promise<{
   blocks: CbtfHalfDayBlock[]
   recommendedDays: CbtfRecommendedDay[]
@@ -464,14 +466,16 @@ export async function getRecommendedDaysAndSlots(
         dayStartUtc,
         hours,
         [],
-        timeZone
+        timeZone,
+        durationMinutes
       )
       const allSlots = generateAvailableSlotsForDate(
         facility,
         dayStartUtc,
         hours,
         dayReservations,
-        timeZone
+        timeZone,
+        durationMinutes
       )
 
       const dayOfWeek = getLocalDayOfWeek(dayStartUtc, timeZone)

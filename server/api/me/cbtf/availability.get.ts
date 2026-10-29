@@ -52,6 +52,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
       courseId: true,
       title: true,
       isSchedulable: true,
+      cbtfDurationMinutes: true,
       scheduleWindowStart: true,
       scheduleWindowEnd: true,
       availableFrom: true,
@@ -100,7 +101,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
     facility,
     studentWindow,
     query.blockId || query.timeOfDayPreference,
-    query.selectedDate
+    query.selectedDate,
+    undefined,
+    assignment.cbtfDurationMinutes ?? 60
   )
 
   return {

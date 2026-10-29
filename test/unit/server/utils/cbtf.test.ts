@@ -549,3 +549,41 @@ describe('CBTF Server Utilities', () => {
     })
   })
 })
+
+// Slot generation is independent of the current clock; use an explicit UTC facility.
+describe('Configurable CBTF duration: closing-time boundaries', () => {
+  const facility = { totalSeats: 48, timezone: 'UTC' }
+  const date = new Date('2030-01-07T00:00:00.000Z')
+  const hours = { isOpen: true, openTime: '08:00', closeTime: '12:00', reason: null }
+
+  it.each([
+    [20, '11:40', '11:45'],
+    [120, '10:00', '10:05']
+  ] as const)('allows the exact closing boundary for %i minutes and rejects later starts',
+    (duration, latestStart, rejectedStart) => {
+      const slots = generateAvailableSlotsForDate(facility, date, hours, [], 'UTC', duration)
+      const latest = new Date(`2030-01-07T${latestStart}:00.000Z`)
+      const rejected = new Date(`2030-01-07T${rejectedStart}:00.000Z`)
+
+      expect(slots).toContainEqual(expect.objectContaining({
+        startTime: latest, endTime: new Date('2030-01-07T12:00:00.000Z')
+      }))
+      expect(slots.some((slot) => slot.startTime.getTime() === rejected.getTime())).toBe(false)
+      expect(slots.every((slot) => slot.startTime <= latest)).toBe(true)
+      expect(slots.every((slot) =>
+        slot.endTime.getTime() - slot.startTime.getTime() === duration * 60 * 1000
+      )).toBe(true)
+    })
+
+  it('keeps the omitted duration at 60 minutes', () => {
+    const slots = generateAvailableSlotsForDate(facility, date, hours, [])
+    expect(slots.length).toBeGreaterThan(0)
+    expect(slots[slots.length - 1]).toMatchObject({
+      startTime: new Date('2030-01-07T11:00:00.000Z'),
+      endTime: new Date('2030-01-07T12:00:00.000Z')
+    })
+    expect(slots.every((slot) =>
+      slot.endTime.getTime() - slot.startTime.getTime() === 60 * 60 * 1000
+    )).toBe(true)
+  })
+})

@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import availabilityGet from '../../../../../server/api/me/cbtf/availability.get'
 import reservationsGet from '../../../../../server/api/me/cbtf/reservations.get'
 import reservationsPost from '../../../../../server/api/me/cbtf/reservations.post'
@@ -811,4 +811,96 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       expect(response.data.status).toBe('CANCELLED')
     })
   })
+
+  describe('Configurable CBTF duration: persistence', () => {
+    const assignmentId = 'clh1234567890123456789012'
+    const startTime = '2030-01-07T10:00:00.000Z'
+
+    beforeEach(() => {
+      // Reset queued implementations left by stale-date tests before setting up this suite.
+      vi.resetAllMocks()
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2030-01-01T00:00:00.000Z'))
+      vi.mocked(prisma.$transaction).mockImplementation((async (cb: any) => cb(prisma)) as any)
+      vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
+      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
+      vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
+      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({
+        id: 'fac-1', name: 'Testing Center', timezone: 'UTC', totalSeats: 48,
+        seatAllocationOrder: Array.from({ length: 48 }, (_, i) => i + 1)
+      } as any)
+      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
+      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
+        openTime: '08:00', closeTime: '17:00'
+      } as any)
+    })
+
+    afterEach(() => vi.useRealTimers())
+
+    function assignment(duration: number | null) {
+      return {
+        id: assignmentId, courseId: 'course-1', title: 'Exam', isSchedulable: true,
+        cbtfDurationMinutes: duration,
+        scheduleWindowStart: new Date('2030-01-01T00:00:00.000Z'),
+        scheduleWindowEnd: new Date('2030-01-15T00:00:00.000Z'),
+        course: { label: 'CS101', title: 'Course' }
+      }
+    }
+
+    function reservation(data: any) {
+      return {
+        id: 'res-duration', ...data,
+        assignment: { title: 'Exam' },
+        user: { firstName: 'Demo', lastName: 'User', studentId: '123', avatarUrl: null }
+      } as any
+    }
+
+    it.each([
+      [20, 20], [120, 120], [null, 60]
+    ])('POST persists the correct endTime for duration %s', async (duration, expectedMinutes) => {
+      vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment(duration) as any)
+      vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }: any) =>
+        reservation(data)
+      )
+      const expectedEnd = new Date(new Date(startTime).getTime() + expectedMinutes! * 60 * 1000)
+
+      const response = await reservationsPost(mockEvent(
+        { id: 'usr-1', globalRole: 'USER' }, {}, { assignmentId, startTime }
+      ))
+
+      expect(response.statusCode).toBe(201)
+      expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ startTime: new Date(startTime), endTime: expectedEnd })
+      }))
+      expect(response.data.endTime).toBe(expectedEnd.toISOString())
+    })
+
+    it('PATCH persists a new endTime 120 minutes after the new start', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-duration', userId: 'usr-1', status: 'SCHEDULED',
+        startTime: new Date('2030-01-06T10:00:00.000Z'),
+        endTime: new Date('2030-01-06T12:00:00.000Z'),
+        assignment: assignment(120)
+      } as any)
+      vi.mocked(prisma.cbtfReservation.update).mockImplementation(async ({ data }: any) =>
+        reservation(data)
+      )
+
+      const response = await reservationPatch(mockEvent(
+        { id: 'usr-1', globalRole: 'USER' }, {}, { startTime }, { id: 'res-duration' }
+      ))
+
+      expect(response.statusCode).toBe(200)
+      expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: { id: 'res-duration' },
+        data: expect.objectContaining({
+          startTime: new Date(startTime), endTime: new Date('2030-01-07T12:00:00.000Z')
+        })
+      }))
+      expect(response.data.endTime).toBe('2030-01-07T12:00:00.000Z')
+    })
+  })
+
 })

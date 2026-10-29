@@ -69,9 +69,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       })
     }
 
-    // 2. Test reservations are strictly 1 hour
-    const endTime = new Date(startTime.getTime() + 60 * 60 * 1000)
-
     // 2b. Ensure reservation is in the future
     currentStep = 'Verifying Slot Is In The Future'
     if (startTime < new Date()) {
@@ -90,6 +87,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         courseId: true,
         title: true,
         isSchedulable: true,
+        cbtfDurationMinutes: true,
         scheduleWindowStart: true,
         scheduleWindowEnd: true,
         availableFrom: true,
@@ -105,6 +103,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         statusMessage: 'Assignment is not configured for CBTF scheduling'
       })
     }
+    const endTime = new Date(
+      startTime.getTime() + (assignment.cbtfDurationMinutes ?? 60) * 60 * 1000
+    )
     targetAssignmentTitle = assignment.title
     targetCourseLabel = assignment.course?.label || assignment.course?.title || null
 

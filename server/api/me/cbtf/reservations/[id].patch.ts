@@ -73,8 +73,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       })
     }
 
-    const newEndTime = new Date(newStartTime.getTime() + 60 * 60 * 1000)
-
     // Ensure new time is in the future
     currentStep = 'Verifying Slot Is In The Future'
     if (newStartTime < new Date()) {
@@ -99,6 +97,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     if (!existing || existing.userId !== session.user.id) {
       throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
     }
+    const newEndTime = new Date(
+      newStartTime.getTime() + (existing.assignment.cbtfDurationMinutes ?? 60) * 60 * 1000
+    )
     targetAssignmentTitle = existing.assignment?.title || null
     targetCourseLabel =
       existing.assignment?.course?.label || existing.assignment?.course?.title || null
