@@ -381,6 +381,7 @@ model Assignment {
 
   // CBTF Scheduling properties
   isSchedulable       Boolean   @default(false)
+  cbtfDurationMinutes Int?
   scheduleWindowStart DateTime?
   scheduleWindowEnd   DateTime?
   cbtfReservations    CbtfReservation[]
