@@ -116,6 +116,45 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       })
     }
 
+    // Prevent duplicate: student cannot have another active reservation for the same assignment
+    currentStep = 'Checking For Duplicate Assignment Reservation'
+    const existingActiveForAssignment = await prisma.cbtfReservation.findFirst({
+      where: {
+        userId: session.user.id,
+        assignmentId: existing.assignment?.id || existing.assignmentId,
+        id: { not: existing.id },
+        status: { in: ['SCHEDULED', 'CHECKED_IN'] }
+      }
+    })
+    if (existingActiveForAssignment) {
+      throw createError({
+        statusCode: 409,
+        statusMessage:
+          'You already have an active reservation for this assignment. Cancel it before rescheduling this one.'
+      })
+    }
+
+    // Check if student already completed this exam (requires retake pass to reschedule)
+    currentStep = 'Checking For Completed Exam'
+    const existingCompleted = await prisma.cbtfReservation.findFirst({
+      where: {
+        userId: session.user.id,
+        assignmentId: existing.assignment?.id || existing.assignmentId,
+        id: { not: existing.id },
+        status: { in: ['CHECKED_OUT', 'COMPLETED'] }
+      }
+    })
+    if (existingCompleted) {
+      const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment)
+      if (!studentWindow.isPassWindow) {
+        throw createError({
+          statusCode: 403,
+          statusMessage:
+            'You have already completed this exam. A retake pass is required to reschedule another attempt.'
+        })
+      }
+    }
+
     // Check for time collision with student's other active reservations
     currentStep = 'Checking Time Overlap With Other Reservations'
     const conflictingSlot = await prisma.cbtfReservation.findFirst({
