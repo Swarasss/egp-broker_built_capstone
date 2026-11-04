@@ -810,6 +810,55 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       expect(response.statusCode).toBe(200)
       expect(response.data.status).toBe('CANCELLED')
     })
+
+    it('rejects cancelling a reservation already checked in', async () => {
+      const event = mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {}, { id: 'res-1' })
+
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1',
+        userId: 'usr-1',
+        status: 'CHECKED_IN'
+      } as any)
+
+      await expect(reservationDelete(event)).rejects.toThrowError(
+        expect.objectContaining({
+          statusCode: 400,
+          statusMessage: expect.stringContaining('Only scheduled reservations can be cancelled')
+        })
+      )
+    })
+
+    it('returns 404 when cancelling another user reservation', async () => {
+      const event = mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {}, { id: 'res-1' })
+
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1',
+        userId: 'usr-2',
+        status: 'SCHEDULED'
+      } as any)
+
+      await expect(reservationDelete(event)).rejects.toThrowError(
+        expect.objectContaining({ statusCode: 404 })
+      )
+    })
+
+    it('rejects cancellation when status changed concurrently', async () => {
+      const event = mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {}, { id: 'res-1' })
+
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1',
+        userId: 'usr-1',
+        status: 'SCHEDULED'
+      } as any)
+
+      vi.mocked(prisma.cbtfReservation.update).mockRejectedValueOnce(
+        Object.assign(new Error('Record not found'), { code: 'P2025' })
+      )
+
+      await expect(reservationDelete(event)).rejects.toThrowError(
+        expect.objectContaining({ statusCode: 409 })
+      )
+    })
   })
 
   describe('Configurable CBTF duration: persistence', () => {

@@ -35,17 +35,35 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     })
   }
 
-  // Delete individual Canvas assignment override if present
-  await deleteCbtfReservationCanvasOverride(existing.id)
+  // Delete individual Canvas assignment override if present;
+  // failure must not block local cancellation (seat still freed)
+  try {
+    await deleteCbtfReservationCanvasOverride(existing.id)
+  } catch {
+    console.warn(`[CBTF Cancel] Failed to delete Canvas override for reservation ${existing.id}`)
+  }
 
-  const updated = await prisma.cbtfReservation.update({
-    where: { id: existing.id },
-    data: { status: 'CANCELLED' },
-    include: {
-      assignment: { select: { title: true } },
-      user: { select: { firstName: true, lastName: true, studentId: true, avatarUrl: true } }
+  // Atomically transition SCHEDULED -> CANCELLED only if still SCHEDULED
+  // (prevents cancelling a reservation a proctor already checked in)
+  let updated: any
+  try {
+    updated = await prisma.cbtfReservation.update({
+      where: { id: existing.id, status: 'SCHEDULED' },
+      data: { status: 'CANCELLED' },
+      include: {
+        assignment: { select: { title: true } },
+        user: { select: { firstName: true, lastName: true, studentId: true, avatarUrl: true } }
+      }
+    })
+  } catch (err: any) {
+    if (err?.code === 'P2025') {
+      throw createError({
+        statusCode: 409,
+        statusMessage: 'Reservation is no longer available to cancel'
+      })
     }
-  })
+    throw err
+  }
 
   return {
     statusCode: 200,
