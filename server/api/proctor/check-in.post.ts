@@ -21,7 +21,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     throw createError({ statusCode: 400, statusMessage: 'Reservation ID is required' })
   }
 
-  const updated = await checkInReservation(prisma as any, reservationId, session.user.id)
+  const studentId = body?.studentId
+  if (studentId !== undefined && (typeof studentId !== 'string' || !studentId.trim())) {
+    throw createError({ statusCode: 400, statusMessage: 'Invalid student ID' })
+  }
+
+  const updated = await checkInReservation(prisma as any, reservationId, session.user.id, studentId?.trim())
 
   return {
     statusCode: 200,

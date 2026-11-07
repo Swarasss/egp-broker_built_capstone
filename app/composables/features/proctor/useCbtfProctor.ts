@@ -100,12 +100,12 @@ export function useCbtfProctor() {
     }
   }
 
-  const confirmCheckIn = async (reservationId: string) => {
+  const confirmCheckIn = async (reservationId: string, studentId?: string) => {
     lookupLoading.value = true
     try {
       const res = await $fetch<ApiResponse<any>>('/api/proctor/check-in', {
         method: 'POST',
-        body: { reservationId }
+        body: { reservationId, ...(studentId ? { studentId } : {}) }
       })
 
       const studentName = res.data.studentName || 'Student'
@@ -138,12 +138,12 @@ export function useCbtfProctor() {
     }
   }
 
-  const confirmCheckOut = async (reservationId: string) => {
+  const confirmCheckOut = async (reservationId: string, studentId?: string) => {
     lookupLoading.value = true
     try {
       const res = await $fetch<ApiResponse<any>>('/api/proctor/check-out', {
         method: 'POST',
-        body: { reservationId }
+        body: { reservationId, ...(studentId ? { studentId } : {}) }
       })
 
       const studentName = res.data.studentName || 'Student'

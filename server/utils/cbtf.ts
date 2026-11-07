@@ -1037,7 +1037,8 @@ export async function lookupStudentForProctor(prisma: PrismaClient, studentId: s
 export async function checkInReservation(
   prisma: PrismaClient,
   reservationId: string,
-  proctorUserId: string
+  proctorUserId: string,
+  verifiedStudentId?: string
 ) {
   const reservation = await prisma.cbtfReservation.findUnique({
     where: { id: reservationId },
@@ -1066,6 +1067,13 @@ export async function checkInReservation(
     throw createError({
       statusCode: 400,
       statusMessage: `Cannot check in reservation with status '${reservation.status}'`
+    })
+  }
+
+  if (verifiedStudentId && reservation.user?.studentId !== verifiedStudentId) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'Student ID does not match this reservation'
     })
   }
 
@@ -1098,7 +1106,8 @@ export async function checkInReservation(
 export async function checkOutReservation(
   prisma: PrismaClient,
   reservationId: string,
-  proctorUserId: string
+  proctorUserId: string,
+  verifiedStudentId?: string
 ) {
   const reservation = await prisma.cbtfReservation.findUnique({
     where: { id: reservationId },
@@ -1123,6 +1132,13 @@ export async function checkOutReservation(
     throw createError({
       statusCode: 400,
       statusMessage: `Reservation is not currently checked in (status: '${reservation.status}')`
+    })
+  }
+
+  if (verifiedStudentId && reservation.user?.studentId !== verifiedStudentId) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'Student ID does not match this reservation'
     })
   }
 

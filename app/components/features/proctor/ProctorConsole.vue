@@ -693,16 +693,17 @@ const handleSwipeSubmit = async () => {
 const handleCheckInConfirm = async () => {
   const resId = lookupResult.value?.reservation?.id
   if (!resId) return
-  await props.proctorState.confirmCheckIn(resId)
+  await props.proctorState.confirmCheckIn(resId, lookupResult.value?.student?.studentId)
   clearAndRefocus()
 }
 
 const handleCheckOutConfirm = async () => {
   const resId = lookupResult.value?.reservation?.id
   if (!resId) return
-  await props.proctorState.confirmCheckOut(resId)
+  await props.proctorState.confirmCheckOut(resId, lookupResult.value?.student?.studentId)
   clearAndRefocus()
 }
+
 
 const handleNoteModalUpdate = (val: boolean) => {
   if (!val) {
