@@ -261,6 +261,7 @@
   <FeaturesAdminAssignmentEditPanel
     v-model:open="assignmentEditOpen"
     :assignment="editingAssignment"
+    :course-id="courseId"
     :pass-types="passTypesData?.data"
     @saved="onAssignmentSavedWithRefresh"
     @created="onAssignmentItemCreated"
