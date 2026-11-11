@@ -335,7 +335,7 @@
               <span class="text-xs font-semibold uppercase tracking-wider text-neutral-500">
                 Reservation Summary
               </span>
-              <UBadge color="neutral" variant="subtle" size="xs"> 60 Minutes Duration </UBadge>
+              <UBadge color="neutral" variant="subtle" size="xs"> {{ assignment?.cbtfDurationMinutes ?? 60 }} Minutes Duration </UBadge>
             </div>
 
             <div class="space-y-1">

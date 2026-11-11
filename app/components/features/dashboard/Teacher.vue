@@ -584,7 +584,9 @@ const assignmentColumns: any[] = [
                 name: 'i-lucide-landmark',
                 class: 'w-3 h-3 mr-1 text-primary-500'
               }),
-              'CBTF'
+              row.original.cbtfDurationMinutes != null
+                ? `CBTF • ${row.original.cbtfDurationMinutes} min`
+                : 'CBTF'
             ]
           ),
         h(
