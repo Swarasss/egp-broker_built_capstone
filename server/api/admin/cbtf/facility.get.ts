@@ -1,6 +1,5 @@
 import { defineEventHandler, createError } from 'h3'
 import prisma from '@@/server/utils/db'
-import { getPrimaryCbtfFacility } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
@@ -12,10 +11,13 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
-  const facility = await getPrimaryCbtfFacility(prisma as any)
+  const facilities = await prisma.cbtfFacility.findMany({
+    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+    include: { operatingHours: true, scheduleExceptions: true }
+  })
 
   return {
     statusCode: 200,
-    data: facility
+    data: facilities
   }
 })

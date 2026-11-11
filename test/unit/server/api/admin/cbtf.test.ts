@@ -1,6 +1,8 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import facilityGet from '../../../../../server/api/admin/cbtf/facility.get'
 import facilityPatch from '../../../../../server/api/admin/cbtf/facility.patch'
+import facilityPost from '../../../../../server/api/admin/cbtf/facility.post'
+import facilityDelete from '../../../../../server/api/admin/cbtf/facility/[id].delete'
 import operatingHoursPost from '../../../../../server/api/admin/cbtf/operating-hours.post'
 import operatingHoursDelete from '../../../../../server/api/admin/cbtf/operating-hours/[id].delete'
 import exceptionsPost from '../../../../../server/api/admin/cbtf/exceptions.post'
@@ -17,8 +19,12 @@ import prisma from '@@/server/utils/db'
 vi.mock('@@/server/utils/db', () => ({
   default: {
     $transaction: vi.fn((promises: any[]) => Promise.all(promises)),
+    $queryRaw: vi.fn(),
     cbtfFacility: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
+      findUnique: vi.fn(),
+      delete: vi.fn(),
       update: vi.fn(),
       create: vi.fn()
     },
@@ -31,6 +37,7 @@ vi.mock('@@/server/utils/db', () => ({
       delete: vi.fn()
     },
     cbtfProctorShift: {
+      count: vi.fn(),
       findMany: vi.fn(),
       findUnique: vi.fn(),
       create: vi.fn(),
@@ -93,7 +100,7 @@ describe('API: Admin CBTF Endpoints', () => {
       )
     })
 
-    it('returns facility data for admin', async () => {
+    it('returns all facilities for admin', async () => {
       const event = mockEvent('ADMIN')
       const mockFacility = {
         id: 'fac-1',
@@ -103,21 +110,22 @@ describe('API: Admin CBTF Endpoints', () => {
         operatingHours: [],
         scheduleExceptions: []
       }
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue(mockFacility as any)
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([mockFacility, { ...mockFacility, id: 'fac-2' }] as any)
 
       const res = await facilityGet(event)
       expect(res.statusCode).toBe(200)
-      expect(res.data.id).toBe('fac-1')
+      expect(res.data.map((facility: any) => facility.id)).toEqual(['fac-1', 'fac-2'])
     })
 
     it('updates facility seats and custom allocation order', async () => {
       const event = mockEvent('ADMIN', {
+        facilityId: 'fac-2',
         name: 'Updated Facility',
         totalSeats: 24,
         seatAllocationOrder: [1, 13, 2, 14]
       })
 
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({ id: 'fac-1' } as any)
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({ id: 'fac-2' } as any)
       vi.mocked(prisma.cbtfFacility.update).mockResolvedValue({
         id: 'fac-1',
         name: 'Updated Facility',
@@ -131,13 +139,83 @@ describe('API: Admin CBTF Endpoints', () => {
       expect(res.statusCode).toBe(200)
       expect(prisma.cbtfFacility.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'fac-1' },
+          where: { id: 'fac-2' },
           data: expect.objectContaining({
             totalSeats: 24,
             seatAllocationOrder: [1, 13, 2, 14]
           })
         })
       )
+    })
+  })
+
+  describe('Multi-facility management', () => {
+    it('returns an empty list without creating a default facility', async () => {
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([])
+      expect((await facilityGet(mockEvent())).data).toEqual([])
+      expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
+    })
+
+    it.each([facilityGet, facilityPost, facilityPatch, facilityDelete])(
+      'requires an authenticated administrator', async (handler) => {
+        await expect(handler(mockEvent(null))).rejects.toMatchObject({ statusCode: 401 })
+        await expect(handler(mockEvent('USER'))).rejects.toMatchObject({ statusCode: 403 })
+      }
+    )
+
+    it('creates a facility with a default seat order', async () => {
+      vi.mocked(prisma.cbtfFacility.create).mockResolvedValue({ id: 'fac-new' } as any)
+      const result = await facilityPost(mockEvent('ADMIN', { name: 'Room Two', totalSeats: 3 }))
+      expect(result).toMatchObject({ statusCode: 201, data: { id: 'fac-new' } })
+      expect(prisma.cbtfFacility.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ name: 'Room Two', totalSeats: 3, seatAllocationOrder: [1, 2, 3] })
+      }))
+    })
+
+    it('rejects invalid facility creation', async () => {
+      await expect(facilityPost(mockEvent('ADMIN', { name: '', totalSeats: 0 })))
+        .rejects.toMatchObject({ statusCode: 400 })
+      expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
+    })
+
+    it('requires an explicit facility ID for updates', async () => {
+      await expect(facilityPatch(mockEvent('ADMIN', { name: 'Room' })))
+        .rejects.toMatchObject({ statusCode: 400 })
+      expect(prisma.cbtfFacility.update).not.toHaveBeenCalled()
+    })
+
+    it('returns 404 for an unknown update target', async () => {
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(null)
+      await expect(facilityPatch(mockEvent('ADMIN', { facilityId: 'missing', name: 'Room' })))
+        .rejects.toMatchObject({ statusCode: 404 })
+    })
+
+    const prepareDeletion = (exists = true, reservations = 0, shifts = 0) => {
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) => callback(prisma))
+      vi.mocked(prisma.$queryRaw).mockResolvedValue(exists ? [{ id: 'fac-2' }] : [])
+      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(reservations)
+      vi.mocked(prisma.cbtfProctorShift.count).mockResolvedValue(shifts)
+    }
+
+    it('deletes an unused facility', async () => {
+      prepareDeletion()
+      const result = await facilityDelete(mockEvent('ADMIN', {}, { id: 'fac-2' }))
+      expect(result.statusCode).toBe(200)
+      expect(prisma.cbtfFacility.delete).toHaveBeenCalledWith({ where: { id: 'fac-2' } })
+    })
+
+    it.each([[1, 0], [0, 1]])('blocks deletion with reservations=%i shifts=%i', async (reservations, shifts) => {
+      prepareDeletion(true, reservations, shifts)
+      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'fac-2' })))
+        .rejects.toMatchObject({ statusCode: 409 })
+      expect(prisma.cbtfFacility.delete).not.toHaveBeenCalled()
+    })
+
+    it('returns 404 for an unknown delete target', async () => {
+      prepareDeletion(false)
+      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'missing' })))
+        .rejects.toMatchObject({ statusCode: 404 })
+      expect(prisma.cbtfFacility.delete).not.toHaveBeenCalled()
     })
   })
 

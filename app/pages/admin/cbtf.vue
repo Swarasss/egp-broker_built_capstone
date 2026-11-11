@@ -6,6 +6,33 @@
       icon="i-lucide-landmark"
     />
 
+    <div class="flex flex-wrap items-center gap-3">
+      <USelect
+        v-model="selectedFacilityId"
+        :items="facilities.map((item) => ({ label: item.name, value: item.id }))"
+        placeholder="Select a facility"
+        class="min-w-64"
+        :disabled="creatingFacility || savingFacility || deletingFacility"
+      />
+      <UButton
+        label="Add Facility"
+        icon="i-lucide-plus"
+        :disabled="creatingFacility || savingFacility || deletingFacility"
+        @click="startFacilityCreate"
+      />
+      <UButton
+        label="Delete Facility"
+        icon="i-lucide-trash-2"
+        color="error"
+        variant="outline"
+        :disabled="!facility || creatingFacility || savingFacility"
+        :loading="deletingFacility"
+        @click="handleDeleteFacility"
+      />
+      <p v-if="creatingFacility" class="text-sm">New facility</p>
+      <p v-else-if="facility" class="text-sm">Selected facility: {{ facility.name }}</p>
+    </div>
+
     <!-- Navigation Tabs -->
     <div class="flex border-b border-neutral-200 dark:border-neutral-800 gap-6">
       <button
@@ -18,6 +45,7 @@
             ? 'border-primary-500 text-primary-600 dark:text-primary-400'
             : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
         ]"
+        :disabled="creatingFacility || (!facility && tab.id !== 'facility')"
         @click="activeTab = tab.id"
       >
         <div class="flex items-center gap-2">
@@ -109,8 +137,17 @@
 
           <div class="pt-4 border-t border-neutral-200 dark:border-neutral-800 flex justify-end">
             <UButton
+              v-if="creatingFacility"
+              color="neutral"
+              variant="outline"
+              label="Cancel"
+              :disabled="savingFacility"
+              @click="cancelFacilityCreate"
+            />
+            <UButton
               color="primary"
-              label="Save Facility Settings"
+              :label="creatingFacility ? 'Create Facility' : 'Save Facility Settings'"
+              :disabled="(!creatingFacility && !facility) || deletingFacility"
               icon="i-lucide-save"
               :loading="savingFacility"
               @click="handleSaveFacility"
@@ -698,6 +735,9 @@ definePageMeta({
 })
 
 const {
+  facilities,
+  selectedFacilityId,
+  deleteFacility,
   facility,
   shifts,
   reservations,
@@ -729,6 +769,8 @@ const activeTab = ref('facility')
 
 // --- Facility Form State ---
 const savingFacility = ref(false)
+const creatingFacility = ref(false)
+const deletingFacility = ref(false)
 const facilityForm = reactive({
   name: '',
   totalSeats: 48,
@@ -750,21 +792,58 @@ const resetSeatOrder = () => {
   facilityForm.seatAllocationOrderStr = seats.join(', ')
 }
 
+const syncFacilityForm = (fac: any) => {
+  if (fac) {
+    facilityForm.name = fac.name || ''
+    facilityForm.totalSeats = fac.totalSeats || 48
+    facilityForm.checkInLeadMinutes = fac.checkInLeadMinutes ?? 5
+    facilityForm.checkInGraceMinutes = fac.checkInGraceMinutes ?? 15
+    facilityForm.timezone = fac.timezone || 'America/New_York'
+    const order = Array.isArray(fac.seatAllocationOrder) ? fac.seatAllocationOrder : []
+    facilityForm.seatAllocationOrderStr = order.join(', ')
+  } else {
+    Object.assign(facilityForm, {
+      name: '',
+      totalSeats: 48,
+      seatAllocationOrderStr: '',
+      checkInLeadMinutes: 5,
+      checkInGraceMinutes: 15,
+      timezone: 'America/New_York'
+    })
+  }
+}
+
 watch(
   facility,
   (fac) => {
-    if (fac) {
-      facilityForm.name = fac.name || ''
-      facilityForm.totalSeats = fac.totalSeats || 48
-      facilityForm.checkInLeadMinutes = fac.checkInLeadMinutes ?? 5
-      facilityForm.checkInGraceMinutes = fac.checkInGraceMinutes ?? 15
-      facilityForm.timezone = fac.timezone || 'America/New_York'
-      const order = Array.isArray(fac.seatAllocationOrder) ? fac.seatAllocationOrder : []
-      facilityForm.seatAllocationOrderStr = order.join(', ')
-    }
+    if (!creatingFacility.value) syncFacilityForm(fac)
   },
   { immediate: true }
 )
+
+const startFacilityCreate = () => {
+  creatingFacility.value = true
+  activeTab.value = 'facility'
+  syncFacilityForm(null)
+  resetSeatOrder()
+}
+
+const cancelFacilityCreate = () => {
+  creatingFacility.value = false
+  syncFacilityForm(facility.value)
+}
+
+const handleDeleteFacility = async () => {
+  if (!facility.value || !confirm(`Delete facility "${facility.value.name}"?`)) return
+  deletingFacility.value = true
+  try {
+    await deleteFacility()
+  } catch {
+    // The composable displays the API error, including deletion conflicts.
+  } finally {
+    deletingFacility.value = false
+  }
+}
 
 const handleSaveFacility = async () => {
   savingFacility.value = true
@@ -774,14 +853,21 @@ const handleSaveFacility = async () => {
       .map((s) => Number(s.trim()))
       .filter((n) => !isNaN(n) && n > 0)
 
-    await saveFacility({
-      name: facilityForm.name,
-      totalSeats: facilityForm.totalSeats,
-      checkInLeadMinutes: facilityForm.checkInLeadMinutes,
-      checkInGraceMinutes: facilityForm.checkInGraceMinutes,
-      timezone: facilityForm.timezone,
-      seatAllocationOrder: order.length > 0 ? order : undefined
-    })
+    await saveFacility(
+      {
+        name: facilityForm.name,
+        totalSeats: facilityForm.totalSeats,
+        checkInLeadMinutes: facilityForm.checkInLeadMinutes,
+        checkInGraceMinutes: facilityForm.checkInGraceMinutes,
+        timezone: facilityForm.timezone,
+        seatAllocationOrder: order.length > 0 ? order : undefined
+      },
+      creatingFacility.value
+    )
+    creatingFacility.value = false
+    syncFacilityForm(facility.value)
+  } catch {
+    // The composable displays validation and API errors.
   } finally {
     savingFacility.value = false
   }

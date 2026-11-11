@@ -8,7 +8,7 @@ export function useCbtfAdmin() {
     data: facilityData,
     status: facilityStatus,
     refresh: refreshFacility
-  } = useFetch<ApiResponse<any>>('/api/admin/cbtf/facility')
+  } = useFetch<ApiResponse<any[]>>('/api/admin/cbtf/facility')
 
   const {
     data: shiftsData,
@@ -28,7 +28,20 @@ export function useCbtfAdmin() {
     refresh: refreshProctors
   } = useFetch<ApiResponse<any[]>>('/api/admin/cbtf/proctors')
 
-  const facility = computed(() => facilityData.value?.data)
+  const selectedFacilityId = ref<string | undefined>()
+  const facilities = computed(() => facilityData.value?.data || [])
+  watch(
+    facilities,
+    (items) => {
+      if (!items.some((item) => item.id === selectedFacilityId.value)) {
+        selectedFacilityId.value = items[0]?.id
+      }
+    },
+    { immediate: true }
+  )
+  const facility = computed(() =>
+    facilities.value.find((item) => item.id === selectedFacilityId.value)
+  )
   const shifts = computed(() => shiftsData.value?.data || [])
   const reservations = computed(() => reservationsData.value?.data || [])
   const proctors = computed(() => proctorsData.value?.data || [])
@@ -37,12 +50,18 @@ export function useCbtfAdmin() {
     name?: string
     totalSeats?: number
     seatAllocationOrder?: number[]
-  }) => {
+    checkInLeadMinutes?: number
+    checkInGraceMinutes?: number
+    timezone?: string
+  }, creating = false) => {
+    const facilityId = selectedFacilityId.value
+    if (!creating && !facilityId) return
     try {
-      await $fetch('/api/admin/cbtf/facility', {
-        method: 'PATCH',
-        body: payload
+      const response = await $fetch<ApiResponse<any>>('/api/admin/cbtf/facility', {
+        method: creating ? 'POST' : 'PATCH',
+        body: creating ? payload : { ...payload, facilityId }
       })
+      selectedFacilityId.value = response.data.id
       toast.add({
         title: 'Facility Settings Saved',
         color: 'success'
@@ -52,6 +71,23 @@ export function useCbtfAdmin() {
       toast.add({
         title: 'Failed to Save Facility',
         description: err.data?.message || err.message,
+        color: 'error'
+      })
+      throw err
+    }
+  }
+
+  const deleteFacility = async () => {
+    const id = selectedFacilityId.value
+    if (!id) return
+    try {
+      await $fetch(`/api/admin/cbtf/facility/${id}`, { method: 'DELETE' })
+      await refreshFacility()
+      toast.add({ title: 'Facility Deleted', color: 'success' })
+    } catch (err: any) {
+      toast.add({
+        title: 'Failed to Delete Facility',
+        description: err.data?.statusMessage || err.data?.message || err.message,
         color: 'error'
       })
       throw err
@@ -329,6 +365,9 @@ export function useCbtfAdmin() {
   }
 
   return {
+    facilities,
+    selectedFacilityId,
+    deleteFacility,
     facility,
     facilityStatus,
     refreshFacility,

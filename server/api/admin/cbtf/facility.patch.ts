@@ -1,7 +1,7 @@
 import { defineEventHandler, readBody, createError } from 'h3'
+import { z } from 'zod'
 import prisma from '@@/server/utils/db'
 import { updateFacilityInputSchema } from '@@/shared/schemas/cbtf.schema'
-import { getPrimaryCbtfFacility } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
@@ -14,7 +14,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const body = await readBody(event)
-  const validation = updateFacilityInputSchema.safeParse(body)
+  const validation = updateFacilityInputSchema
+    .extend({ facilityId: z.string().min(1) })
+    .safeParse(body)
   if (!validation.success) {
     throw createError({
       statusCode: 400,
@@ -23,7 +25,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     })
   }
 
-  const facility = await getPrimaryCbtfFacility(prisma as any)
+  const facility = await prisma.cbtfFacility.findUnique({
+    where: { id: validation.data.facilityId }
+  })
+  if (!facility) {
+    throw createError({ statusCode: 404, statusMessage: 'Facility not found' })
+  }
   const data: Record<string, any> = {}
 
   if (validation.data.name !== undefined) {
