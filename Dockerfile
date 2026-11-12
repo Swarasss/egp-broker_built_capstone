@@ -64,15 +64,18 @@ ENV NODE_ENV=production
 
 # Copy package.json and pnpm-lock.yaml
 COPY package.json pnpm-lock.yaml ./
-# Install ONLY the prisma CLI for migrations.
-# We avoid a full 'pnpm install' here to prevent root node_modules from
-# shadowing the dependencies bundled in .output/server/node_modules.
-RUN pnpm add prisma --save-dev --ignore-scripts
+# Install the tools needed for migrations and manual seeding without
+# installing the full application's dependency tree or running its hooks.
+# Keep the CLI and client versions aligned with the build-stage client.
+RUN pnpm add prisma@6.18.0 @prisma/client@6.18.0 tsx@4.20.6 --ignore-scripts
 
 # Copy only the output from the build stage
 COPY --from=build /app/.output ./.output
 # Copy prisma schema for runtime migrations
 COPY --from=build /app/prisma ./prisma
+COPY --from=build /app/prisma.config.ts ./prisma.config.ts
+# The seed runs outside the Nuxt bundle and needs its own generated client.
+RUN pnpm exec prisma generate
 
 # Expose Nuxt production port
 EXPOSE 3000

@@ -413,6 +413,9 @@ Run through this checklist to confirm everything is working:
 
 After the workloads are running, you can optionally seed the database with test data. This creates demo users, sample courses, assignments, and pass types.
 
+> [!CAUTION]
+> The seed script deletes existing application records before inserting test records. Only run this on a fresh deployment or when you intentionally want to reset the database. It is not transactional: a failure can leave the database empty or partially seeded.
+
 1. In the left sidebar, navigate to **Workloads → Deployments**.
 2. Click on the **egp-broker** deployment name.
 3. In the pod list, click the name of the running pod (e.g., `egp-broker-xxxxxxxxx-xxxxx`).
@@ -420,7 +423,9 @@ After the workloads are running, you can optionally seed the database with test 
 5. In the terminal that opens, run:
 
    ```sh
-   npx prisma db seed
+   cd /app
+   pnpm exec prisma db seed
+   echo "Seed exit code: $?"
    ```
 
 6. You should see output like:
@@ -428,19 +433,40 @@ After the workloads are running, you can optionally seed the database with test 
    ```
    🌱 Starting database seeding...
    ✅ Existing data deleted
-   ✅ 2 test users created
+   ✅ 3 test users created
    ✅ LTI platform and deployment created
    ...
    🎉 Seeding completed successfully!
    ```
 
-> [!CAUTION]
-> The seed script **deletes all existing data** before inserting test records. Only run this on a fresh deployment or when you intentionally want to reset the database.
+The output appears in the **Execute Shell terminal**, not the application's main container logs. Look for `Starting database seeding`, `Seeding completed successfully`, and exit code `0`; an exit code alone does not confirm that the seed ran.
 
-The seed script creates two users:
+If the command returns without these messages and the tables remain empty, check the production image in the application pod:
+
+```sh
+cd /app
+ls -l prisma.config.ts prisma/seed.ts
+pnpm exec tsx --version
+node -e 'const { PrismaClient } = require("@prisma/client"); const p = new PrismaClient(); console.log("Prisma client ready"); p.$disconnect()'
+```
+
+Older versions of this Dockerfile copied the `prisma` directory but omitted `prisma.config.ts` (which registers the seed command), `tsx` (which executes TypeScript), and a generated Prisma client for the seed. With no seed command configured, the Prisma CLI may return without invoking `prisma/seed.ts`. Migrations only create/update the schema; they do not insert these demo records.
+
+**Fix:** Rebuild the production image using the updated Dockerfile, push it with a new version tag, and update the Rancher deployment to that tag (see [Updating the Application](#updating-the-application)). Once the new pod is ready, open its application container shell and run the seed command above. Re-running the command in an old image will not fix the missing files or dependencies.
+
+If the seed starts but reports an error, read that error in the terminal. The schema uses `NUXT_DATABASE_URL`; ensure the application pod points to the same database you are inspecting. After changing the shared secret, redeploy the application so its environment is refreshed. Do not print the connection string because it contains the database password.
+
+To verify the records independently, open **Execute Shell** on the **PostgreSQL** pod and run:
+
+```sh
+psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c 'SELECT email, "globalRole" FROM "User" ORDER BY email;'
+```
+
+The seed script creates three users:
 
 - **Admin:** `admin@example.com` / `Admin123!`
 - **Demo:** `demo@example.com` / `Demo123!`
+- **Proctor:** `proctor@example.com` / `Demo123!`
 
 ---
 

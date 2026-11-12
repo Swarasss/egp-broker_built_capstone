@@ -94,7 +94,7 @@ services:
     build:
       context: .
       target: production
-    image: docker.cs.vt.edu/stedwar2/egp-broker:${APP_VERSION:-latest}
+    image: container.cs.vt.edu/swara23/slot_sync:${APP_VERSION:-latest}
     container_name: egp-broker
     ports:
       - 127.0.0.1:8081:3000 # Changed from 8080 to avoid conflict with Adminer
