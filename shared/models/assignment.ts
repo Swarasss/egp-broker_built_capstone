@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod'
+import { getAssignmentSchedulingErrors } from '../utils/assignment-scheduling'
 
 export type { Assignment } from '@prisma/client'
 
@@ -82,6 +83,10 @@ export const createAssignmentSchema = z.object({
   hasInterviews: z.boolean().optional(),
   interviewWindowStart: z.string().nullable().optional(),
   interviewWindowEnd: z.string().nullable().optional()
+}).superRefine((data, ctx) => {
+  for (const issue of getAssignmentSchedulingErrors(data)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.name], message: issue.message })
+  }
 })
 
 export const updateAssignmentSchema = z.object({
@@ -99,6 +104,11 @@ export const updateAssignmentSchema = z.object({
   interviewWindowStart: z.string().nullable().optional(),
   interviewWindowEnd: z.string().nullable().optional(),
   manualPassTypeIds: z.array(z.string()).optional()
+}).superRefine((data, ctx) => {
+  // Missing values in partial updates are checked against persisted values by the API.
+  for (const issue of getAssignmentSchedulingErrors(data, false)) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, path: [issue.name], message: issue.message })
+  }
 })
 
 export const linkToolSchema = z.object({

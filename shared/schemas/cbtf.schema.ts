@@ -68,11 +68,13 @@ export const cbtfProctorShiftInputSchema = z
   })
 
 export const createReservationInputSchema = z.object({
+  facilityId: z.string().trim().min(1),
   assignmentId: z.string().cuid(),
   startTime: z.string().datetime()
 })
 
 export const rescheduleReservationInputSchema = z.object({
+  facilityId: z.string().trim().min(1),
   startTime: z.string().datetime()
 })
 
@@ -85,6 +87,7 @@ export const proctorCheckOutInputSchema = z.object({
 })
 
 export const cbtfAvailabilityQuerySchema = z.object({
+  excludeReservationId: z.string().trim().min(1).optional(),
   assignmentId: z.string().cuid(),
   timeOfDayPreference: z.enum(['morning', 'afternoon']).optional(),
   selectedDate: z

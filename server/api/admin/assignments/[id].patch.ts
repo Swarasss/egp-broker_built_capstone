@@ -2,6 +2,7 @@ import { defineEventHandler, getRouterParam } from 'h3'
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { updateAssignmentSchema } from '@@/shared/models/assignment'
+import { getAssignmentSchedulingErrors } from '@@/shared/utils/assignment-scheduling'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   const session = await getUserSession(event)
@@ -22,6 +23,17 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const body = await readValidatedBody(event, updateAssignmentSchema.parse)
+
+  const existing = await prisma.assignment.findUnique({ where: { id } })
+  if (!existing) throw createError({ statusCode: 404, statusMessage: 'Assignment not found' })
+  const schedulingErrors = getAssignmentSchedulingErrors({
+    ...existing,
+    availableFrom: body.availableFrom !== undefined ? body.availableFrom : existing.availableFrom,
+    acceptUntil: body.acceptUntil !== undefined ? body.acceptUntil : existing.acceptUntil
+  })
+  if (schedulingErrors.length) {
+    throw createError({ statusCode: 400, statusMessage: schedulingErrors[0]!.message, data: schedulingErrors })
+  }
 
   const assignment = await prisma.assignment.update({
     where: { id },

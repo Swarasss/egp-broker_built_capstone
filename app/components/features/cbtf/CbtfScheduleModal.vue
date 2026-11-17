@@ -128,6 +128,7 @@
             <h4 class="text-xl font-bold text-neutral-900 dark:text-neutral-100">
               Exam Confirmed!
             </h4>
+            <p class="text-sm font-semibold">{{ selectedSlot?.facilityName }}</p>
             <p class="text-sm text-neutral-600 dark:text-neutral-400 mt-1">
               {{
                 formatReservationTime(confirmedReservation.startTime, confirmedReservation.endTime)
@@ -206,12 +207,11 @@
               :class="[
                 selectedBlockId === block.id
                   ? 'border-primary-500 bg-primary-50/40 dark:bg-primary-950/30 ring-2 ring-primary-500'
-                  : block.isHighDemand
-                    ? 'border-amber-300 dark:border-amber-800/80 bg-amber-50/20 dark:bg-amber-950/10 hover:border-amber-400 dark:hover:border-amber-700'
-                    : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700'
+                  : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700'
               ]"
               @click="chooseBlock(block)"
             >
+              <p class="text-sm font-semibold">{{ block.facilityName }}</p>
               <!-- Top Row: Block Title & Date -->
               <div class="flex items-start justify-between gap-2">
                 <div class="space-y-0.5">
@@ -234,57 +234,11 @@
                   </p>
                 </div>
 
-                <!-- High Demand / Capacity Badge -->
-                <UBadge
-                  v-if="block.isHighDemand"
-                  color="warning"
-                  variant="subtle"
-                  size="xs"
-                  class="shrink-0 flex items-center gap-1 font-semibold"
-                >
-                  <UIcon name="i-lucide-flame" class="w-3.5 h-3.5 text-amber-500" />
-                  <span>High Demand</span>
-                </UBadge>
-                <UBadge v-else color="neutral" variant="subtle" size="xs" class="shrink-0">
-                  {{ block.openSlotsCount }} slots open
+                <UBadge color="neutral" variant="subtle" size="xs" class="shrink-0">
+                  {{ block.totalSeats }}-seat testing center
                 </UBadge>
               </div>
-
-              <!-- Utilization Progress & Metric -->
-              <div class="space-y-1">
-                <div class="flex justify-between text-xs">
-                  <span
-                    :class="[
-                      block.isHighDemand
-                        ? 'font-semibold text-amber-600 dark:text-amber-400'
-                        : 'text-neutral-500 dark:text-neutral-400'
-                    ]"
-                  >
-                    {{ block.utilizationPercentage }}% full
-                  </span>
-                  <span class="text-neutral-400 text-[11px]">
-                    {{ block.totalSlotsCount - block.openSlotsCount }} /
-                    {{ block.totalSlotsCount }} booked
-                  </span>
-                </div>
-                <div
-                  class="w-full h-1.5 bg-neutral-100 dark:bg-neutral-800 rounded-full overflow-hidden"
-                >
-                  <div
-                    class="h-full rounded-full transition-all"
-                    :class="[
-                      block.utilizationPercentage < 50
-                        ? 'bg-green-500'
-                        : block.utilizationPercentage <= 60
-                          ? 'bg-emerald-500'
-                          : block.utilizationPercentage <= 75
-                            ? 'bg-amber-500'
-                            : 'bg-red-500'
-                    ]"
-                    :style="{ width: `${block.utilizationPercentage}%` }"
-                  />
-                </div>
-              </div>
+              <p class="text-xs text-neutral-500">Available arrival times</p>
             </button>
           </div>
         </div>
@@ -293,7 +247,7 @@
         <div v-else-if="currentStep === 2" class="space-y-4">
           <p class="text-sm text-neutral-600 dark:text-neutral-400">
             Pick an arrival time for
-            <strong>{{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong> ({{
+            <strong>{{ selectedBlock?.facilityName }} — {{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong> ({{
               selectedBlock?.timeRangeLabel
             }}):
           </p>
@@ -308,17 +262,18 @@
           <div v-else class="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <button
               v-for="slot in availabilityData.hourlySlots"
-              :key="slot.startTime"
+              :key="`${slot.facilityId}:${slot.startTime}`"
               type="button"
               class="p-3 rounded-lg border text-center transition-all cursor-pointer font-medium text-sm flex flex-col items-center justify-center gap-1"
               :class="[
-                selectedSlot?.startTime === slot.startTime
+                selectedSlot?.facilityId === slot.facilityId && selectedSlot?.startTime === slot.startTime
                   ? 'border-primary-500 bg-primary-600 text-white font-bold shadow-sm'
                   : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700 text-neutral-900 dark:text-neutral-100'
               ]"
               @click="chooseSlot(slot)"
             >
               <UIcon name="i-lucide-clock" class="w-4 h-4" />
+              <span>{{ slot.facilityName }}</span>
               <span>{{ slot.formattedTime }}</span>
             </button>
           </div>
@@ -339,6 +294,8 @@
             </div>
 
             <div class="space-y-1">
+              <p class="text-xs text-neutral-500 uppercase">Testing Center</p>
+              <p class="font-semibold">{{ selectedSlot?.facilityName }}</p>
               <p class="text-xs text-neutral-500 uppercase">Assignment</p>
               <p class="font-bold text-neutral-900 dark:text-neutral-100">
                 {{ assignment?.title || availabilityData?.assignmentTitle }}
@@ -500,7 +457,9 @@ const loadAvailability = async (blockId?: string) => {
   try {
     const data = await fetchAvailability(
       props.assignment.id,
-      blockId || selectedBlockId.value || undefined
+      blockId || selectedBlockId.value || undefined,
+      undefined,
+      isRescheduling.value ? props.existingReservation?.id : undefined
     )
     availabilityData.value = data
     if (!selectedBlockId.value && data.blocks && data.blocks.length > 0) {
@@ -553,10 +512,15 @@ const handleConfirmBooking = async () => {
     if (isRescheduling.value && props.existingReservation?.id) {
       result = await rescheduleReservation(
         props.existingReservation.id,
-        selectedSlot.value.startTime
+        selectedSlot.value.startTime,
+        selectedSlot.value.facilityId
       )
     } else {
-      result = await createReservation(props.assignment.id, selectedSlot.value.startTime)
+      result = await createReservation(
+        props.assignment.id,
+        selectedSlot.value.startTime,
+        selectedSlot.value.facilityId
+      )
     }
     confirmedReservation.value = result
     emit('reserved', result)

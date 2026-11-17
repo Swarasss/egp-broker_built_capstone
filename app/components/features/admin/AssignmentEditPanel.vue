@@ -5,7 +5,7 @@
     :description="panelDescription"
   >
     <template #body>
-      <UForm ref="formRef" :state="state" @submit="handleSubmit">
+      <UForm ref="formRef" :state="state" :validate="validateScheduling" @submit="handleSubmit">
         <div class="space-y-6">
           <BaseFormInput
             v-model="state.title"
@@ -37,6 +37,11 @@
             label="Accept Until"
             type="datetime-local"
           />
+
+          <p v-if="state.isSchedulable" class="text-xs text-neutral-500">
+            Available From / Accept Until define when the exam can be taken. The reservation
+            window below defines when students can create or change their booking.
+          </p>
 
           <!-- CBTF Scheduling Options -->
           <div class="pt-4 border-t border-neutral-200 dark:border-neutral-800 space-y-4">
@@ -169,6 +174,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, useTemplateRef } from 'vue'
+import { getAssignmentSchedulingErrors } from '@@/shared/utils/assignment-scheduling'
 const { success, error: showError } = useNotifications()
 
 interface AssignmentData {
@@ -323,7 +329,14 @@ watch(
   { immediate: true }
 )
 
+const validateScheduling = () => getAssignmentSchedulingErrors(state)
+
 const handleSubmit = async () => {
+  const errors = validateScheduling()
+  if (errors.length) {
+    showError({ title: 'Validation error', message: errors.map(issue => issue.message).join(' ') })
+    return
+  }
   saving.value = true
   try {
     const body: Record<string, any> = {

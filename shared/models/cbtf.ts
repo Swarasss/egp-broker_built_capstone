@@ -99,6 +99,8 @@ export interface CbtfReservationNoteDto {
 }
 
 export interface CbtfRecommendedDay {
+  facilityId: string
+  facilityName: string
   date: string // YYYY-MM-DD
   dayOfWeek: number
   label: string // e.g. "Monday, Sep 8"
@@ -107,6 +109,9 @@ export interface CbtfRecommendedDay {
 }
 
 export interface CbtfHalfDayBlock {
+  totalSeats: number // Persisted physical capacity, never a count of candidate starts.
+  facilityId: string
+  facilityName: string
   id: string // e.g. "2026-09-15-morning"
   date: string // YYYY-MM-DD
   dayOfWeek: number
@@ -115,13 +120,15 @@ export interface CbtfHalfDayBlock {
   dateLabel: string // e.g. "Sep 15"
   timeRangeLabel: string // e.g. "8:00 AM – 1:00 PM"
   isCurrentBlock: boolean
-  openSlotsCount: number
-  totalSlotsCount: number
-  utilizationPercentage: number
+  openSlotsCount: number // Candidate start timestamps; internal recommendation metadata.
+  totalSlotsCount: number // Candidate start timestamps, not physical seats.
+  utilizationPercentage: number // Unavailable-arrival percentage; not room occupancy.
   isHighDemand: boolean // true if utilizationPercentage > 60
 }
 
 export interface CbtfHourlySlotChoice {
+  facilityId: string
+  facilityName: string
   hour: number // e.g. 9 for 09:00
   startTime: string // ISO string
   endTime: string // ISO string

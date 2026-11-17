@@ -2,6 +2,7 @@ import { defineEventHandler, readValidatedBody, getRouterParam, createError } fr
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { updateAssignmentSchema } from '@@/shared/models/assignment'
+import { getAssignmentSchedulingErrors } from '@@/shared/utils/assignment-scheduling'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   const session = await getUserSession(event)
@@ -45,6 +46,14 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const body = await readValidatedBody(event, updateAssignmentSchema.parse)
+
+  const schedulingErrors = getAssignmentSchedulingErrors({
+    ...assignment,
+    ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined))
+  })
+  if (schedulingErrors.length) {
+    throw createError({ statusCode: 400, statusMessage: schedulingErrors[0]!.message, data: schedulingErrors })
+  }
 
   const updated = await prisma.assignment.update({
     where: { id },

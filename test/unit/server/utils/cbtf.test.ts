@@ -249,15 +249,15 @@ describe('CBTF Server Utilities', () => {
         id: 'asg-1',
         scheduleWindowStart: new Date('2026-09-10T08:00:00.000Z'),
         scheduleWindowEnd: new Date('2026-09-20T18:00:00.000Z'),
-        availableFrom: null,
+        availableFrom: new Date('2026-09-22T08:00:00.000Z'),
         dueDate: null,
-        acceptUntil: null
+        acceptUntil: new Date('2026-09-25T18:00:00.000Z')
       }
 
       const window = await getStudentSchedulingWindow('usr-1', assignment, mockTx)
       expect(window.isPassWindow).toBe(false)
-      expect(window.start.toISOString()).toBe('2026-09-10T08:00:00.000Z')
-      expect(window.end.toISOString()).toBe('2026-09-20T18:00:00.000Z')
+      expect(window.start.toISOString()).toBe('2026-09-22T08:00:00.000Z')
+      expect(window.end.toISOString()).toBe('2026-09-25T18:00:00.000Z')
     })
 
     it('returns retake pass window when student redeemed a pass for the assignment', async () => {
@@ -274,9 +274,9 @@ describe('CBTF Server Utilities', () => {
         id: 'asg-1',
         scheduleWindowStart: new Date('2026-09-10T08:00:00.000Z'),
         scheduleWindowEnd: new Date('2026-09-20T18:00:00.000Z'),
-        availableFrom: null,
+        availableFrom: new Date('2026-09-10T08:00:00.000Z'),
         dueDate: null,
-        acceptUntil: null
+        acceptUntil: new Date('2026-09-20T18:00:00.000Z')
       }
 
       const window = await getStudentSchedulingWindow('usr-1', assignment, mockTx)
@@ -333,9 +333,9 @@ describe('CBTF Server Utilities', () => {
 
       expect(result.blocks.length).toBe(4) // 4 future blocks by default
       expect(result.blocks[0].id).toBe('2026-10-05-morning')
-      expect(result.blocks[0].timeRangeLabel).toBe('8:00 AM – 12:30 PM')
+      expect(result.blocks[0].timeRangeLabel).toBe('8:00 AM – 12:25 PM')
       expect(result.blocks[1].id).toBe('2026-10-05-afternoon')
-      expect(result.blocks[1].timeRangeLabel).toBe('12:30 PM – 5:00 PM')
+      expect(result.blocks[1].timeRangeLabel).toBe('12:30 PM – 4:00 PM')
 
       // Morning slots: 8:00 AM – 12:30 PM (4.5 hours = 9 half-hour periods: 8:00..12:00)
       expect(result.hourlySlots.length).toBe(9)
@@ -380,7 +380,7 @@ describe('CBTF Server Utilities', () => {
       )
 
       // 9:00 AM to 12:30 PM is 3.5 hours of arrivals -> exactly 7 half-hour slots (9:00 to 12:00 start)
-      expect(morningResult.blocks[0].timeRangeLabel).toBe('9:00 AM – 12:30 PM')
+      expect(morningResult.blocks[0].timeRangeLabel).toBe('9:00 AM – 12:25 PM')
       expect(morningResult.hourlySlots.length).toBe(7)
       expect(morningResult.hourlySlots[0].hour).toBe(9)
       expect(morningResult.hourlySlots[morningResult.hourlySlots.length - 1].hour).toBe(12)
@@ -393,7 +393,7 @@ describe('CBTF Server Utilities', () => {
         undefined,
         mockTx
       )
-      expect(afternoonResult.blocks[1].timeRangeLabel).toBe('12:30 PM – 5:00 PM')
+      expect(afternoonResult.blocks[1].timeRangeLabel).toBe('12:30 PM – 4:00 PM')
       expect(afternoonResult.hourlySlots.length).toBe(8) // 12:30, 13:00, 13:30, 14:00, 14:30, 15:00, 15:30, 16:00
       expect(afternoonResult.hourlySlots[0].hour).toBe(12)
       expect(

@@ -64,7 +64,8 @@ export function useCbtfStudent() {
   const fetchAvailability = async (
     assignmentId: string,
     blockIdOrPreference?: string,
-    selectedDate?: string
+    selectedDate?: string,
+    excludeReservationId?: string
   ): Promise<CbtfAvailabilityData> => {
     const params: Record<string, string> = { assignmentId }
     if (blockIdOrPreference) {
@@ -77,6 +78,7 @@ export function useCbtfStudent() {
       }
     }
     if (selectedDate) params.selectedDate = selectedDate
+    if (excludeReservationId) params.excludeReservationId = excludeReservationId
 
     const res = await $fetch<ApiResponse<CbtfAvailabilityData>>('/api/me/cbtf/availability', {
       params
@@ -86,12 +88,13 @@ export function useCbtfStudent() {
 
   const createReservation = async (
     assignmentId: string,
-    startTime: string
+    startTime: string,
+    facilityId: string
   ): Promise<CbtfReservationDto> => {
     try {
       const res = await $fetch<ApiResponse<CbtfReservationDto>>('/api/me/cbtf/reservations', {
         method: 'POST',
-        body: { assignmentId, startTime }
+        body: { assignmentId, facilityId, startTime }
       })
       toast.add({
         title: 'Exam Scheduled Successfully',
@@ -112,14 +115,15 @@ export function useCbtfStudent() {
 
   const rescheduleReservation = async (
     reservationId: string,
-    newStartTime: string
+    newStartTime: string,
+    facilityId: string
   ): Promise<CbtfReservationDto> => {
     try {
       const res = await $fetch<ApiResponse<CbtfReservationDto>>(
         `/api/me/cbtf/reservations/${reservationId}`,
         {
           method: 'PATCH',
-          body: { startTime: newStartTime }
+          body: { facilityId, startTime: newStartTime }
         }
       )
       toast.add({

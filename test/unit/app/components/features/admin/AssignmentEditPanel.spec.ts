@@ -153,7 +153,8 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
         open: true, courseId: 'c1', passTypes: [],
         assignment: {
           id: 'a1', title: 'Exam', canvasAssignmentId: null,
-          dueDate: null, availableFrom: null, acceptUntil: null,
+          dueDate: null, availableFrom: '2030-01-07T08:00:00Z', acceptUntil: '2030-01-07T12:00:00Z',
+          scheduleWindowStart: '2030-01-01T08:00:00Z', scheduleWindowEnd: '2030-01-05T12:00:00Z',
           isSchedulable: true, cbtfDurationMinutes: 37
         }
       },
@@ -182,11 +183,32 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
     await wrapper.setProps({ assignment: null, open: true })
     await wrapper.findAll('input[role="switch"]')[0]!.setValue(true)
     expect(wrapper.get<HTMLInputElement>('input[name="cbtfDurationMinutes"]').element.value).toBe('60')
+    for (const [name, value] of Object.entries({ availableFrom: '2030-01-07T08:00', acceptUntil: '2030-01-07T12:00',
+      scheduleWindowStart: '2030-01-01T08:00', scheduleWindowEnd: '2030-01-05T12:00' })) {
+      await wrapper.get(`input[name="${name}"]`).setValue(value)
+    }
     await wrapper.get('form').trigger('submit')
     await flushPromises()
     expect(mockFetch).toHaveBeenCalledWith('/api/me/assignments', {
       method: 'POST', body: expect.objectContaining({ courseId: 'c1', cbtfDurationMinutes: 60 })
     })
+    wrapper.unmount()
+  })
+
+  it.each([
+    ['acceptUntil', '2030-01-07T07:00', 'Available From must be before Accept Until'],
+    ['scheduleWindowEnd', '2029-01-01T00:00', 'Reservation Window Start must be before Reservation Window End'],
+    ['cbtfDurationMinutes', '300', 'must fit the full 300-minute exam'],
+    ['cbtfDurationMinutes', '0', 'positive whole number']
+  ])('shows clear validation for invalid %s', async (field, value, message) => {
+    const wrapper = mountPanel()
+    await wrapper.get(`input[name="${field}"]`).setValue(value)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockNotifications.error).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining(message)
+    }))
     wrapper.unmount()
   })
 

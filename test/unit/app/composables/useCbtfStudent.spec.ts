@@ -127,6 +127,14 @@ describe('useCbtfStudent Composable', () => {
     expect(result).toEqual(mockAvailability)
   })
 
+  it('passes the current reservation exclusion when fetching rescheduling availability', async () => {
+    mockFetch.mockResolvedValueOnce({ data: { blocks: [], hourlySlots: [] } })
+    await useCbtfStudent().fetchAvailability('asg-1', 'fac-1:2030-01-07-morning', undefined, 'res-1')
+    expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/availability', {
+      params: { assignmentId: 'asg-1', blockId: 'fac-1:2030-01-07-morning', excludeReservationId: 'res-1' }
+    })
+  })
+
   it('creates reservation and refreshes list', async () => {
     const newRes = {
       id: 'res-3',
@@ -140,11 +148,11 @@ describe('useCbtfStudent Composable', () => {
     mockFetch.mockResolvedValueOnce({ data: newRes })
 
     const { createReservation } = useCbtfStudent()
-    const result = await createReservation('asg-3', '2026-10-06T10:00:00.000Z')
+    const result = await createReservation('asg-3', '2026-10-06T10:00:00.000Z', 'fac-1')
 
     expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/reservations', {
       method: 'POST',
-      body: { assignmentId: 'asg-3', startTime: '2026-10-06T10:00:00.000Z' }
+      body: { facilityId: 'fac-1', assignmentId: 'asg-3', startTime: '2026-10-06T10:00:00.000Z' }
     })
     expect(mockToast.add).toHaveBeenCalledWith(expect.objectContaining({ color: 'success' }))
     expect(mockRefresh).toHaveBeenCalled()
@@ -161,11 +169,11 @@ describe('useCbtfStudent Composable', () => {
     mockFetch.mockResolvedValueOnce({ data: updated })
 
     const { rescheduleReservation } = useCbtfStudent()
-    const result = await rescheduleReservation('res-1', '2026-10-07T14:00:00.000Z')
+    const result = await rescheduleReservation('res-1', '2026-10-07T14:00:00.000Z', 'fac-2')
 
     expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/reservations/res-1', {
       method: 'PATCH',
-      body: { startTime: '2026-10-07T14:00:00.000Z' }
+      body: { facilityId: 'fac-2', startTime: '2026-10-07T14:00:00.000Z' }
     })
     expect(mockToast.add).toHaveBeenCalledWith(expect.objectContaining({ color: 'success' }))
     expect(mockRefresh).toHaveBeenCalled()

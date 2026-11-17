@@ -143,10 +143,12 @@ describe('CBTF Shared Schemas', () => {
   describe('createReservationInputSchema and rescheduleReservationInputSchema', () => {
     it('validates reservation request inputs', () => {
       const createInput = {
+        facilityId: 'fac-1',
         assignmentId: 'clh1234567890123456789012',
         startTime: '2026-09-10T09:15:00.000Z'
       }
       const rescheduleInput = {
+        facilityId: 'fac-2',
         startTime: '2026-09-10T14:30:00.000Z'
       }
       expect(createReservationInputSchema.safeParse(createInput).success).toBe(true)
@@ -272,12 +274,13 @@ describe('CBTF Shared Schemas', () => {
         courseLabel: 'CS 101',
         courseTitle: 'Intro to CS',
         dueDate: '2026-09-20T23:59:00.000Z',
-        availableFrom: '2026-09-01T00:00:00.000Z',
-        acceptUntil: '2026-09-20T23:59:00.000Z',
+        availableFrom: '2026-09-20T08:00:00.000Z',
+        acceptUntil: '2026-09-20T18:00:00.000Z',
         published: true,
         isSchedulable: true,
+        cbtfDurationMinutes: 75,
         scheduleWindowStart: '2026-09-10T08:00:00.000Z',
-        scheduleWindowEnd: '2026-09-20T18:00:00.000Z',
+        scheduleWindowEnd: '2026-09-19T18:00:00.000Z',
         createdAt: '2026-09-01T00:00:00.000Z'
       }
       expect(assignmentRowSchema.safeParse(schedulableRow).success).toBe(true)
@@ -285,9 +288,12 @@ describe('CBTF Shared Schemas', () => {
       const createData = {
         courseId: 'course-1',
         title: 'CBTF Exam',
+        availableFrom: schedulableRow.availableFrom,
+        acceptUntil: schedulableRow.acceptUntil,
         isSchedulable: true,
+        cbtfDurationMinutes: 75,
         scheduleWindowStart: '2026-09-10T08:00:00.000Z',
-        scheduleWindowEnd: '2026-09-20T18:00:00.000Z'
+        scheduleWindowEnd: '2026-09-19T18:00:00.000Z'
       }
       expect(createAssignmentSchema.safeParse(createData).success).toBe(true)
 

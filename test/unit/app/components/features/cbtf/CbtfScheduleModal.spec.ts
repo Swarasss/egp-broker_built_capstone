@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
+import { mount, flushPromises } from '@vue/test-utils'
 import CbtfScheduleModal from '~/components/features/cbtf/CbtfScheduleModal.vue'
 import type { CbtfReservationDto } from '@@/shared/models/cbtf'
 
@@ -61,6 +61,56 @@ describe('CbtfScheduleModal', () => {
     })
   })
 
+  it.each([false, true])('carries the selected center through review and confirmation (rescheduling: %s)', async (rescheduling) => {
+    const blocks = ['North', 'South'].map(name => ({
+      id: `${name}:2026-10-01-morning`, facilityId: name, facilityName: `${name} Center`,
+      label: 'Thursday Morning', dateLabel: 'Oct 1', timeRangeLabel: '8 AM – 12 PM',
+      totalSeats: 48, openSlotsCount: 54, totalSlotsCount: 54, utilizationPercentage: 0
+    }))
+    mockFetchAvailability.mockResolvedValue({ blocks, recommendedDays: [], hourlySlots: [{
+      facilityId: 'South', facilityName: 'South Center', startTime: '2026-10-01T09:00:00Z',
+      endTime: '2026-10-01T10:00:00Z', formattedTime: '9:00 AM', hour: 9
+    }] })
+    const wrapper = mount(CbtfScheduleModal, {
+      props: { open: false, assignment: mockAssignment, existingReservation: rescheduling ? mockExistingReservation : null }, global: { stubs }
+    })
+    await wrapper.setProps({ open: true })
+    if (rescheduling) {
+      await wrapper.findAll('button').find(b => b.text().includes('Reschedule Exam'))!.trigger('click')
+    }
+    await flushPromises()
+    expect(wrapper.text()).toContain('48-seat testing center')
+    expect(wrapper.text()).toContain('Available arrival times')
+    expect(wrapper.text()).not.toContain('slots open')
+    expect(wrapper.text()).not.toContain('booked')
+    expect(wrapper.text()).not.toContain('% full')
+    expect(wrapper.text()).not.toContain('54')
+    expect(wrapper.text()).toContain('North Center')
+    expect(wrapper.text()).toContain('South Center')
+    await wrapper.findAll('button').find(b => b.text().includes('South Center'))!.trigger('click')
+    await flushPromises()
+    expect(mockFetchAvailability).toHaveBeenLastCalledWith(mockAssignment.id, blocks[1]!.id, undefined, rescheduling ? mockExistingReservation.id : undefined)
+    const timeButton = wrapper.findAll('button').find(b => b.text().includes('9:00 AM'))!
+    expect(timeButton.text()).toContain('South Center')
+    await timeButton.trigger('click')
+    expect(wrapper.text()).toContain('Testing Center')
+    expect(wrapper.text()).toContain('South Center')
+    expect(mockCreateReservation).not.toHaveBeenCalled()
+    expect(mockRescheduleReservation).not.toHaveBeenCalled()
+    const result = { ...mockExistingReservation, facilityId: 'South', seatNumber: 7 }
+    mockCreateReservation.mockResolvedValue(result)
+    mockRescheduleReservation.mockResolvedValue(result)
+    await wrapper.findAll('button').find(b => b.text().includes(rescheduling ? 'Confirm Reschedule' : 'Confirm Reservation'))!.trigger('click')
+    await flushPromises()
+    expect(rescheduling ? mockRescheduleReservation : mockCreateReservation).toHaveBeenCalledWith(
+      rescheduling ? mockExistingReservation.id : mockAssignment.id,
+      '2026-10-01T09:00:00Z', 'South'
+    )
+    expect(wrapper.text()).toContain('Exam Confirmed!')
+    expect(wrapper.text()).toContain('South Center')
+    expect(wrapper.emitted('reserved')?.[0]).toEqual([result])
+  })
+
   it('renders Mode A: current reservation view when existingReservation is present', () => {
     const wrapper = mount(CbtfScheduleModal, {
       props: {
@@ -94,7 +144,7 @@ describe('CbtfScheduleModal', () => {
     await rescheduleBtn!.trigger('click')
 
     // Expect availability was fetched
-    expect(mockFetchAvailability).toHaveBeenCalledWith('asg-cbtf-1', undefined)
+    expect(mockFetchAvailability).toHaveBeenCalledWith('asg-cbtf-1', undefined, undefined, 'res-1')
 
     // Check reassurance banner
     expect(wrapper.text()).toContain('Current Reservation Protected')

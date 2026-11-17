@@ -2,11 +2,13 @@ import { defineEventHandler, readBody, createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import { createReservationInputSchema } from '@@/shared/schemas/cbtf.schema'
 import {
-  getPrimaryCbtfFacility,
   getFacilityOperatingHoursForDate,
   calculateMaxArrivalsPerSlot,
   assignNextSeat,
+  getFacilitySeatAllocationOrder,
+  hasAvailableCbtfSeat,
   getStudentSchedulingWindow,
+  assertCbtfReservationWindowOpen,
   toCbtfReservationDto
 } from '@@/server/utils/cbtf'
 import { combineDateAndTime } from '@@/shared/utils/timezone'
@@ -48,7 +50,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         data: validation.error.flatten()
       })
     }
-    const { assignmentId, startTime: startTimeStr } = validation.data
+    const { assignmentId, facilityId, startTime: startTimeStr } = validation.data
     targetSlot = startTimeStr
 
     currentStep = 'Checking 5-Minute Boundary Alignment'
@@ -103,6 +105,8 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         statusMessage: 'Assignment is not configured for CBTF scheduling'
       })
     }
+    currentStep = 'Checking Reservation Window'
+    assertCbtfReservationWindowOpen(assignment)
     const endTime = new Date(
       startTime.getTime() + (assignment.cbtfDurationMinutes ?? 60) * 60 * 1000
     )
@@ -200,11 +204,16 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     })
 
     currentStep = 'Retrieving Testing Facility'
-    const facility = await getPrimaryCbtfFacility()
+    const facility = await prisma.cbtfFacility.findUnique({ where: { id: facilityId } })
+    if (!facility) {
+      throw createError({ statusCode: 400, statusMessage: 'Invalid testing facility' })
+    }
 
     // 7. Transactional booking with throttle check and seat allocation
     currentStep = 'Booking Reservation & Allocating Seat'
     const newReservation = await prisma.$transaction(async (tx) => {
+      // Serialize capacity checks and writes at this facility, including concurrent arrivals.
+      await tx.$queryRaw`SELECT id FROM "CbtfFacility" WHERE id = ${facility.id} FOR UPDATE`
       // A. Verify facility operating hours for slot date
       const timeZone = facility.timezone || 'America/New_York'
       const hours = await getFacilityOperatingHoursForDate(
@@ -258,7 +267,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         select: { seatNumber: true }
       })
 
-      if (activeReservations.length >= facility.totalSeats) {
+      const seatOrder = getFacilitySeatAllocationOrder(facility)
+      const occupiedSeatsCount = new Set(activeReservations.map(reservation => reservation.seatNumber)).size
+      if (occupiedSeatsCount >= facility.totalSeats || !hasAvailableCbtfSeat(seatOrder, activeReservations)) {
         throw createError({
           statusCode: 409,
           statusMessage: 'Testing facility is completely full during this time slot'
@@ -266,10 +277,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       }
 
       // D. Allocate seat based on 5-minute arrival offset
-      const seatOrder: number[] = Array.isArray(facility.seatAllocationOrder)
-        ? (facility.seatAllocationOrder as number[])
-        : Array.from({ length: facility.totalSeats }, (_, i) => i + 1)
-
       const assignedSeat = assignNextSeat(seatOrder, startTime, endTime, activeReservations)
 
       // E. Create or reuse reservation

@@ -2,9 +2,8 @@ import { defineEventHandler, getQuery, createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import { cbtfAvailabilityQuerySchema } from '@@/shared/schemas/cbtf.schema'
 import {
-  getPrimaryCbtfFacility,
   getStudentSchedulingWindow,
-  getRecommendedDaysAndSlots,
+  getAllFacilitiesAvailability,
   toCbtfReservationDto
 } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
@@ -94,16 +93,31 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
     }
   })
 
-  const facility = await getPrimaryCbtfFacility()
+  // Only an owned, reschedulable reservation for this assignment may be excluded.
+  if (query.excludeReservationId) {
+    const reschedulingReservation = await prisma.cbtfReservation.findFirst({
+      where: {
+        id: query.excludeReservationId,
+        userId: session.user.id,
+        assignmentId: assignment.id,
+        status: { in: ['SCHEDULED', 'MISSED', 'CANCELLED'] }
+      },
+      select: { id: true }
+    })
+    if (!reschedulingReservation) {
+      throw createError({ statusCode: 404, statusMessage: 'Reschedulable reservation not found' })
+    }
+  }
+
   const studentWindow = await getStudentSchedulingWindow(session.user.id, assignment)
 
-  const { blocks, recommendedDays, hourlySlots } = await getRecommendedDaysAndSlots(
-    facility,
+  const { blocks, recommendedDays, hourlySlots } = await getAllFacilitiesAvailability(
     studentWindow,
     query.blockId || query.timeOfDayPreference,
     query.selectedDate,
     undefined,
-    assignment.cbtfDurationMinutes ?? 60
+    assignment.cbtfDurationMinutes ?? 60,
+    query.excludeReservationId
   )
 
   return {
