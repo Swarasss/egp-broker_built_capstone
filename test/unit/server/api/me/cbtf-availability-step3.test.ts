@@ -9,6 +9,8 @@ vi.mock('@@/server/utils/db', () => ({
     passRedemption: { findFirst: vi.fn() },
     cbtfReservation: { findFirst: vi.fn(), findMany: vi.fn() },
     cbtfFacility: { findMany: vi.fn() },
+    cbtfSeat: { findMany: vi.fn().mockResolvedValue([]) },
+    cbtfStudentAccommodation: { findUnique: vi.fn().mockResolvedValue(null) },
     cbtfScheduleException: { findFirst: vi.fn() },
     cbtfOperatingHours: { findUnique: vi.fn() }
   }
@@ -56,6 +58,8 @@ describe('Step 3 student CBTF availability', () => {
     vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enrollment' } as any)
     vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(facilities as any)
+    vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
+    vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
     vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({ openTime: '08:00', closeTime: '17:00' } as any)
     vi.mocked(prisma.cbtfReservation.findFirst).mockImplementation(async ({ where }: any) =>

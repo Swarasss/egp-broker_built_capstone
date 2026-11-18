@@ -15,7 +15,11 @@ import {
   grantProctorRoleInputSchema,
   cbtfBatchGenerateShiftsSchema,
   cbtfUpdateProctorShiftInputSchema,
-  cbtfReservationStatusEnum
+  cbtfReservationStatusEnum,
+  cbtfSeatInputSchema,
+  updateCbtfSeatsInputSchema,
+  cbtfAccommodationInputSchema,
+  cbtfAccommodationSearchSchema
 } from '../../../../shared/schemas/cbtf.schema'
 import { userRowSchema } from '../../../../shared/models/user'
 import {
@@ -450,6 +454,71 @@ describe('CBTF Shared Schemas', () => {
         endTime: '2026-09-15T14:00:00.000Z'
       }
       expect(cbtfUpdateProctorShiftInputSchema.safeParse(invalid).success).toBe(false)
+    })
+  })
+
+  describe('cbtfSeatInputSchema', () => {
+    it('validates a certified seat', () => {
+      expect(
+        cbtfSeatInputSchema.safeParse({ seatNumber: 4, properties: ['SSD'] }).success
+      ).toBe(true)
+    })
+
+    it('defaults properties to an empty list', () => {
+      const result = cbtfSeatInputSchema.safeParse({ seatNumber: 4 })
+      expect(result.success).toBe(true)
+      expect(result.data?.properties).toEqual([])
+    })
+
+    it('rejects unknown certifications and invalid seat numbers', () => {
+      expect(cbtfSeatInputSchema.safeParse({ seatNumber: 0 }).success).toBe(false)
+      expect(
+        cbtfSeatInputSchema.safeParse({ seatNumber: 1, properties: ['LASER_PRINTER'] }).success
+      ).toBe(false)
+    })
+  })
+
+  describe('updateCbtfSeatsInputSchema', () => {
+    it('validates a facility seat map', () => {
+      expect(
+        updateCbtfSeatsInputSchema.safeParse({
+          facilityId: 'fac-1',
+          seats: [{ seatNumber: 1, properties: ['SSD', 'ADJUSTABLE_DESK'] }]
+        }).success
+      ).toBe(true)
+    })
+
+    it('requires at least one seat and a facility', () => {
+      expect(updateCbtfSeatsInputSchema.safeParse({ facilityId: '', seats: [] }).success).toBe(false)
+    })
+  })
+
+  describe('cbtfAccommodationInputSchema', () => {
+    it('accepts a valid accommodation profile', () => {
+      const result = cbtfAccommodationInputSchema.safeParse({
+        timeMultiplier: 1.5,
+        requiredSeatProperties: ['SSD'],
+        notes: 'Extra time'
+      })
+      expect(result.success).toBe(true)
+    })
+
+    it('defaults to standard time with no seat requirements', () => {
+      const result = cbtfAccommodationInputSchema.safeParse({})
+      expect(result.success).toBe(true)
+      expect(result.data).toMatchObject({ timeMultiplier: 1, requiredSeatProperties: [] })
+    })
+
+    it('rejects multipliers outside 1.0-3.0', () => {
+      expect(cbtfAccommodationInputSchema.safeParse({ timeMultiplier: 0.5 }).success).toBe(false)
+      expect(cbtfAccommodationInputSchema.safeParse({ timeMultiplier: 3.5 }).success).toBe(false)
+    })
+  })
+
+  describe('cbtfAccommodationSearchSchema', () => {
+    it('accepts an optional search term', () => {
+      expect(cbtfAccommodationSearchSchema.safeParse({ search: 'demo' }).success).toBe(true)
+      expect(cbtfAccommodationSearchSchema.safeParse({}).success).toBe(true)
     })
   })
 })

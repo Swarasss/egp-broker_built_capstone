@@ -191,6 +191,112 @@ export function hasAvailableCbtfSeat(seatOrder: number[], reservations: { seatNu
   return seatOrder.some(seat => !occupiedSeats.has(seat))
 }
 
+/** Snapshot of a student's effective SSD accommodation. */
+export interface StudentAccommodationSnapshot {
+  timeMultiplier: number
+  requiredSeatProperties: string[]
+}
+
+export const DEFAULT_STUDENT_ACCOMMODATION: StudentAccommodationSnapshot = {
+  timeMultiplier: 1,
+  requiredSeatProperties: []
+}
+
+/** Normalizes property tags so comparisons are case/whitespace insensitive. */
+export function normalizeSeatProperties(properties?: readonly string[] | null): string[] {
+  if (!properties) return []
+  const normalized = properties
+    .map((property) => property.trim().toUpperCase())
+    .filter((property) => property.length > 0)
+  return [...new Set(normalized)]
+}
+
+/**
+ * A seat is eligible when it carries every property the student requires.
+ * Students without requirements may only use uncertified seats, so certified
+ * seats stay reserved for the students who need them.
+ */
+export function isSeatEligibleForStudent(
+  seatProperties: readonly string[] | null | undefined,
+  requiredProperties: readonly string[] | null | undefined
+): boolean {
+  const seat = normalizeSeatProperties(seatProperties)
+  const required = normalizeSeatProperties(requiredProperties)
+  if (required.length === 0) return seat.length === 0
+  return required.every((property) => seat.includes(property))
+}
+
+/** Filters the facility allocation order down to seats the student may use. */
+export function getEligibleSeatNumbers(
+  seatAllocationOrder: number[],
+  seatPropertiesByNumber: Map<number, string[]> | Record<number, string[]>,
+  requiredProperties?: readonly string[] | null
+): number[] {
+  const getProperties = (seatNumber: number): string[] => {
+    if (seatPropertiesByNumber instanceof Map) {
+      return seatPropertiesByNumber.get(seatNumber) ?? []
+    }
+    return seatPropertiesByNumber[seatNumber] ?? []
+  }
+  return seatAllocationOrder.filter((seatNumber) =>
+    isSeatEligibleForStudent(getProperties(seatNumber), requiredProperties)
+  )
+}
+
+/**
+ * Applies the accommodation's extra-time multiplier to an assignment duration,
+ * rounding up to the next 5-minute scheduling boundary.
+ */
+export function getEffectiveExamDurationMinutes(
+  baseDurationMinutes?: number | null,
+  timeMultiplier?: number | null
+): number {
+  const base =
+    Number.isFinite(baseDurationMinutes) && (baseDurationMinutes as number) > 0
+      ? (baseDurationMinutes as number)
+      : 60
+  const multiplier =
+    Number.isFinite(timeMultiplier) && (timeMultiplier as number) >= 1
+      ? (timeMultiplier as number)
+      : 1
+  return Math.ceil((base * multiplier) / 5) * 5
+}
+
+/** Loads the active accommodation for a student, falling back to no extra time. */
+export async function getStudentAccommodation(
+  userId: string,
+  tx: PrismaClient | typeof prisma = prisma
+): Promise<StudentAccommodationSnapshot> {
+  const accommodation = await (tx as any).cbtfStudentAccommodation.findUnique({
+    where: { userId },
+    select: { timeMultiplier: true, requiredSeatProperties: true, isActive: true }
+  })
+  if (!accommodation || accommodation.isActive === false) {
+    return { ...DEFAULT_STUDENT_ACCOMMODATION }
+  }
+  return {
+    timeMultiplier: accommodation.timeMultiplier ?? 1,
+    requiredSeatProperties: normalizeSeatProperties(accommodation.requiredSeatProperties)
+  }
+}
+
+/** Loads certified seat properties for a facility, keyed by seat number. */
+export async function getFacilitySeatProperties(
+  facilityId: string,
+  tx: PrismaClient | typeof prisma = prisma
+): Promise<Map<number, string[]>> {
+  const seats = await (tx as any).cbtfSeat.findMany({
+    where: { facilityId },
+    select: { seatNumber: true, properties: true }
+  })
+  return new Map(
+    (seats as { seatNumber: number; properties: string[] }[]).map((seat) => [
+      seat.seatNumber,
+      normalizeSeatProperties(seat.properties)
+    ])
+  )
+}
+
 /**
  * Generates available 5-minute boundary slots for a given date,
  * filtering out throttled slots and capacity-exceeded slots.
@@ -203,7 +309,8 @@ export function generateAvailableSlotsForDate(
   existingReservations: { startTime: Date; endTime: Date; seatNumber: number }[],
   timeZone: string = facility.timezone || DEFAULT_CBTF_TIMEZONE,
   durationMinutes: number = 60,
-  examWindow?: Pick<StudentSchedulingWindow, 'start' | 'end'>
+  examWindow?: Pick<StudentSchedulingWindow, 'start' | 'end'>,
+  eligibleSeatNumbers?: number[]
 ): SlotAvailability[] {
   if (!hours.isOpen || !hours.openTime || !hours.closeTime) {
     return []
@@ -223,6 +330,10 @@ export function generateAvailableSlotsForDate(
   const effectiveEndMs = Math.min(closeDateTime.getTime(), examWindow?.end.getTime() ?? Infinity)
   const latestStartMs = effectiveEndMs - durationMs
   const seatOrder = getFacilitySeatAllocationOrder(facility)
+  const eligibleSeatSet = eligibleSeatNumbers ? new Set(eligibleSeatNumbers) : null
+  const availableSeatOrder = eligibleSeatSet
+    ? seatOrder.filter((seat) => eligibleSeatSet.has(seat))
+    : seatOrder
 
   // Round up so arbitrary opening minutes cannot produce unbookable starts.
   let currentMs = Math.ceil(effectiveStartMs / stepMs) * stepMs
@@ -243,7 +354,9 @@ export function generateAvailableSlotsForDate(
 
     const isThrottleOk = arrivalsCount < maxArrivals
     const occupiedSeatsCount = new Set(activeReservations.map(reservation => reservation.seatNumber)).size
-    const isCapacityOk = occupiedSeatsCount < facility.totalSeats && hasAvailableCbtfSeat(seatOrder, activeReservations)
+    const isCapacityOk =
+      availableSeatOrder.length > 0 &&
+      hasAvailableCbtfSeat(availableSeatOrder, activeReservations)
 
     if (isThrottleOk && isCapacityOk) {
       availableSlots.push({
@@ -287,13 +400,15 @@ export function getOffsetSeatIndices(
  * Assigns the next available seat number based on the student's 5-minute arrival time offset.
  * Maps the 5-minute offset (:00, :05, ..., :55) to contiguous slices of seatAllocationOrder.
  * If all primary seats for the offset are occupied, gracefully overflows in circular order.
+ * `eligibleSeatNumbers` restricts allocation to seats that meet a student's accommodations.
  */
 export function assignNextSeat(
   seatAllocationOrder: number[],
   slotStart: Date,
   slotEnd: Date,
   activeReservationsInWindow: { seatNumber: number }[],
-  _lastAssignedSeat?: number | null
+  _lastAssignedSeat?: number | null,
+  eligibleSeatNumbers?: number[] | null
 ): number {
   if (!seatAllocationOrder || seatAllocationOrder.length === 0) {
     throw createError({
@@ -302,8 +417,19 @@ export function assignNextSeat(
     })
   }
 
+  const effectiveOrder = eligibleSeatNumbers
+    ? seatAllocationOrder.filter((seat) => eligibleSeatNumbers.includes(seat))
+    : seatAllocationOrder
+
+  if (effectiveOrder.length === 0) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'No seats are available that meet this student\'s accommodations'
+    })
+  }
+
   const occupiedSeats = new Set(activeReservationsInWindow.map((r) => r.seatNumber))
-  const totalSeats = seatAllocationOrder.length
+  const totalSeats = effectiveOrder.length
 
   // Calculate 5-minute arrival offset (0 for :00, 1 for :05, ..., 11 for :55)
   const minute = slotStart.getUTCMinutes()
@@ -313,16 +439,16 @@ export function assignNextSeat(
 
   // 1. First priority: Check primary candidate seats assigned to this 5-minute offset
   for (let i = 0; i < count; i++) {
-    const candidateSeat = seatAllocationOrder[startIndex + i]
-    if (!occupiedSeats.has(candidateSeat)) {
+    const candidateSeat = effectiveOrder[startIndex + i]
+    if (candidateSeat !== undefined && !occupiedSeats.has(candidateSeat)) {
       return candidateSeat
     }
   }
 
   // 2. Fallback: If all primary seats for this offset are occupied, check remaining seats in circular order
   for (let i = 0; i < totalSeats; i++) {
-    const candidateSeat = seatAllocationOrder[(startIndex + count + i) % totalSeats]
-    if (!occupiedSeats.has(candidateSeat)) {
+    const candidateSeat = effectiveOrder[(startIndex + count + i) % totalSeats]
+    if (candidateSeat !== undefined && !occupiedSeats.has(candidateSeat)) {
       return candidateSeat
     }
   }
@@ -425,7 +551,8 @@ export async function getAllFacilitiesAvailability(
   selectedDateStr?: string,
   tx: PrismaClient | typeof prisma = prisma,
   durationMinutes: number = 60,
-  excludeReservationId?: string
+  excludeReservationId?: string,
+  requiredSeatProperties: string[] = []
 ) {
   const facilities = await tx.cbtfFacility.findMany({
     orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
@@ -434,10 +561,16 @@ export async function getAllFacilitiesAvailability(
   const results = await Promise.all(facilities.map(async (facility) => {
     const prefix = `${facility.id}:`
     const isSelectedFacility = preferenceOrBlockId?.startsWith(prefix)
+    const seatProperties = await getFacilitySeatProperties(facility.id, tx)
+    const eligibleSeatNumbers = getEligibleSeatNumbers(
+      getFacilitySeatAllocationOrder(facility),
+      seatProperties,
+      requiredSeatProperties
+    )
     const result = await getRecommendedDaysAndSlots(
       facility, studentWindow,
       isSelectedFacility ? preferenceOrBlockId!.slice(prefix.length) : preferenceOrBlockId,
-      selectedDateStr, tx, durationMinutes, excludeReservationId
+      selectedDateStr, tx, durationMinutes, excludeReservationId, eligibleSeatNumbers
     )
     return {
       ...result,
@@ -460,7 +593,8 @@ export async function getRecommendedDaysAndSlots(
   selectedDateStr?: string,
   tx: PrismaClient | typeof prisma = prisma,
   durationMinutes: number = 60,
-  excludeReservationId?: string
+  excludeReservationId?: string,
+  eligibleSeatNumbers?: number[]
 ): Promise<{
   blocks: CbtfHalfDayBlock[]
   recommendedDays: CbtfRecommendedDay[]
@@ -543,7 +677,8 @@ export async function getRecommendedDaysAndSlots(
         [],
         timeZone,
         durationMinutes,
-        studentWindow
+        studentWindow,
+        eligibleSeatNumbers
       ).filter(withinStudentWindow)
       const allSlots = generateAvailableSlotsForDate(
         facility,
@@ -552,7 +687,8 @@ export async function getRecommendedDaysAndSlots(
         dayReservations,
         timeZone,
         durationMinutes,
-        studentWindow
+        studentWindow,
+        eligibleSeatNumbers
       ).filter(withinStudentWindow)
 
       const dayOfWeek = getLocalDayOfWeek(dayStartUtc, timeZone)

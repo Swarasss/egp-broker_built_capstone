@@ -30,6 +30,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
       firstName: true,
       lastName: true,
       email: true,
+      studentId: true,
       globalRole: true,
       avatarUrl: true
     }

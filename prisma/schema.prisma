@@ -60,6 +60,8 @@ model User {
   cbtfReservations CbtfReservation[]
   proctorShifts    CbtfProctorShift[]
   cbtfNotesAuthored CbtfReservationNote[]
+  cbtfAccommodation CbtfStudentAccommodation?
+  cbtfAccommodationsUpdated CbtfStudentAccommodation[] @relation("CbtfAccommodationUpdater")
   gtaShifts        GtaShift[]
   gtaInterviewReservationsAsStudent GtaInterviewReservation[] @relation("StudentReservations")
   gtaInterviewReservationsAsGta     GtaInterviewReservation[] @relation("GtaReservations")
@@ -640,6 +642,47 @@ model CbtfFacility {
   scheduleExceptions  CbtfScheduleException[]
   proctorShifts       CbtfProctorShift[]
   reservations        CbtfReservation[]
+  seats               CbtfSeat[]
+}
+
+/// Certified properties for a physical seat in a CBTF facility.
+/// Seats without a row are ordinary seats with no special certifications.
+model CbtfSeat {
+  id         String       @id @default(cuid())
+  facilityId String
+  facility   CbtfFacility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  seatNumber Int
+  /// Certifications such as "SSD", "ADJUSTABLE_DESK", "SCREEN_READER".
+  properties String[]     @default([])
+
+  createdAt  DateTime     @default(now())
+  updatedAt  DateTime     @updatedAt
+
+  @@unique([facilityId, seatNumber])
+  @@index([facilityId])
+}
+
+/// SSD accommodation profile assigned to a student by test-center staff.
+/// Drives seat eligibility and extra-time duration multipliers.
+model CbtfStudentAccommodation {
+  id                     String   @id @default(cuid())
+  userId                 String   @unique
+  user                   User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Seat certifications this student requires (e.g. ["SSD"]). Empty means no special seat.
+  requiredSeatProperties String[] @default([])
+  /// Multiplier applied to the assignment's CBTF duration (1.0 = no extra time).
+  timeMultiplier         Float    @default(1)
+  isActive               Boolean  @default(true)
+  notes                  String?
+
+  updatedById            String?
+  updatedBy              User?    @relation("CbtfAccommodationUpdater", fields: [updatedById], references: [id], onDelete: SetNull)
+
+  createdAt              DateTime @default(now())
+  updatedAt              DateTime @updatedAt
+
+  @@index([userId])
 }
 
 /// Weekly recurring operating hours for a facility.

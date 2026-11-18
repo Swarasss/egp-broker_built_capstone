@@ -134,3 +134,29 @@ export interface CbtfHourlySlotChoice {
   endTime: string // ISO string
   formattedTime: string // e.g. "9:15 AM"
 }
+
+/** Certified properties for one physical seat. Empty properties = ordinary seat. */
+export interface CbtfSeatDto {
+  seatNumber: number
+  properties: string[]
+}
+
+export interface CbtfSeatMapResponse {
+  facilityId: string
+  facilityName: string
+  totalSeats: number
+  seats: CbtfSeatDto[]
+}
+
+/** Effective SSD accommodation for a student. */
+export interface CbtfAccommodationDto {
+  userId: string
+  studentName: string
+  studentEmail: string
+  studentId: string | null
+  requiredSeatProperties: string[]
+  timeMultiplier: number
+  isActive: boolean
+  notes: string | null
+  updatedAt: string
+}

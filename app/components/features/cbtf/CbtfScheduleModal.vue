@@ -290,7 +290,19 @@
               <span class="text-xs font-semibold uppercase tracking-wider text-neutral-500">
                 Reservation Summary
               </span>
-              <UBadge color="neutral" variant="subtle" size="xs"> {{ assignment?.cbtfDurationMinutes ?? 60 }} Minutes Duration </UBadge>
+              <div class="flex items-center gap-2">
+                <UBadge
+                  v-if="(availabilityData?.accommodation?.timeMultiplier ?? 1) > 1"
+                  color="primary"
+                  variant="soft"
+                  size="xs"
+                >
+                  Time accommodation {{ availabilityData?.accommodation?.timeMultiplier }}×
+                </UBadge>
+                <UBadge color="neutral" variant="subtle" size="xs">
+                  {{ effectiveDurationMinutes }} Minutes Duration
+                </UBadge>
+              </div>
             </div>
 
             <div class="space-y-1">
@@ -413,6 +425,13 @@ const cancelling = ref(false)
 const selectedBlockId = ref<string>('')
 const selectedSlot = ref<CbtfHourlySlotChoice | null>(null)
 const availabilityData = ref<CbtfAvailabilityData | null>(null)
+
+const effectiveDurationMinutes = computed(
+  () =>
+    availabilityData.value?.accommodation?.effectiveDurationMinutes ??
+    props.assignment?.cbtfDurationMinutes ??
+    60
+)
 const confirmedReservation = ref<CbtfReservationDto | null>(null)
 
 // Step titles

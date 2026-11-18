@@ -4,6 +4,8 @@ import reservationsPost from '../../../../../server/api/me/cbtf/reservations.pos
 import reservationPatch from '../../../../../server/api/me/cbtf/reservations/[id].patch'
 import assignmentPatch from '../../../../../server/api/me/assignments/[id].patch'
 import prisma from '@@/server/utils/db'
+import { notifyCbtfScheduleFailure } from '@@/server/services/alert.service'
+import { syncCbtfReservationCanvasOverride } from '@@/server/utils/cbtf-canvas'
 
 vi.mock('@@/server/utils/db', () => ({
   default: {
@@ -13,6 +15,8 @@ vi.mock('@@/server/utils/db', () => ({
     passRedemption: { findFirst: vi.fn() },
     cbtfReservation: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn() },
     cbtfFacility: { findMany: vi.fn(), findUnique: vi.fn() },
+    cbtfSeat: { findMany: vi.fn().mockResolvedValue([]) },
+    cbtfStudentAccommodation: { findUnique: vi.fn().mockResolvedValue(null) },
     cbtfScheduleException: { findFirst: vi.fn() },
     cbtfOperatingHours: { findUnique: vi.fn() },
     $queryRaw: vi.fn().mockResolvedValue([]),
@@ -70,6 +74,10 @@ describe('CBTF exam dates versus reservation action dates', () => {
     vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(facilities[1] as any)
     vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({ openTime: '08:00', closeTime: '17:00' } as any)
+    vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
+    vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
+    vi.mocked(notifyCbtfScheduleFailure).mockResolvedValue(true as any)
+    vi.mocked(syncCbtfReservationCanvasOverride).mockResolvedValue({} as any)
     vi.mocked(prisma.$transaction).mockImplementation((async (cb: any) => cb(prisma)) as any)
     const persisted = async ({ data }: any) => ({ id: 'reservation', ...data })
     vi.mocked(prisma.cbtfReservation.create).mockImplementation(persisted as any)

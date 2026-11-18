@@ -34,6 +34,17 @@ const seedUsers = [
     globalRole: 'PROCTOR' as const,
     emailVerified: true,
     emailVerifiedAt: new Date()
+  },
+  {
+    email: 'ssd@example.com',
+    studentId: '906000002',
+    password:
+      '$scrypt$n=16384,r=8,p=1$J1715Bk7oV9rbFwFCPtSpA$y61smy4tql8Il9ybDfpOikdxkkcBVm6T5bJFlL1BDnDrURseVB25keJDYwdlgVVJYIhaP5flZvdT3OMKN7YQkw', // Demo123!
+    firstName: 'Sam',
+    lastName: 'Accommodated',
+    globalRole: 'USER' as const,
+    emailVerified: true,
+    emailVerifiedAt: new Date()
   }
 ]
 
@@ -127,16 +138,19 @@ async function main() {
   // Demo (index 1) as STUDENT in both
   const admin = createdUsers[0]
   const demo = createdUsers[1]
+  const ssdStudent = createdUsers[3]
 
   await prisma.enrollment.createMany({
     data: [
       { userId: admin.id, courseId: course1.id, role: 'TEACHER' },
       { userId: admin.id, courseId: course2.id, role: 'TEACHER' },
       { userId: demo.id, courseId: course1.id, role: 'STUDENT' },
-      { userId: demo.id, courseId: course2.id, role: 'STUDENT' }
+      { userId: demo.id, courseId: course2.id, role: 'STUDENT' },
+      { userId: ssdStudent.id, courseId: course1.id, role: 'STUDENT' },
+      { userId: ssdStudent.id, courseId: course2.id, role: 'STUDENT' }
     ]
   })
-  console.log('✅ Enrollments created (Admin as Teacher, Demo as Student)')
+  console.log('✅ Enrollments created (Admin as Teacher, Demo/SSD as Students)')
 
   // Create LTI Identities for both users
   const canvasApiToken = process.env.CANVAS_API_TOKEN || ''
@@ -270,10 +284,28 @@ async function main() {
           { dayOfWeek: 4, openTime: '08:00', closeTime: '18:00' }, // Thu
           { dayOfWeek: 5, openTime: '08:00', closeTime: '17:00' } // Fri
         ]
+      },
+      seats: {
+        create: [
+          { seatNumber: 1, properties: ['SSD'] },
+          { seatNumber: 2, properties: ['SSD'] },
+          { seatNumber: 3, properties: ['SSD', 'ADJUSTABLE_DESK'] }
+        ]
       }
     }
   })
   console.log(`✅ CBTF Facility created: ${facility.name} with ${facility.totalSeats} seats`)
+
+  await prisma.cbtfStudentAccommodation.create({
+    data: {
+      userId: ssdStudent.id,
+      requiredSeatProperties: ['SSD'],
+      timeMultiplier: 1.5,
+      notes: 'Seed data: 1.5x extra time with SSD-certified seating',
+      updatedById: admin.id
+    }
+  })
+  console.log(`✅ SSD accommodation created for ${ssdStudent.email}`)
 
   // Display created users for reference
   console.log('\n📋 Created users:')

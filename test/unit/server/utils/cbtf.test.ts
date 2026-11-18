@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest'
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest'
 import { combineDateAndTime } from '../../../../shared/utils/timezone'
 import {
   calculateMaxArrivalsPerSlot,
@@ -288,6 +288,17 @@ describe('CBTF Server Utilities', () => {
   })
 
   describe('getRecommendedDaysAndSlots', () => {
+    beforeEach(() => {
+      // These fixtures target the week of Oct 5 2026; pin the clock so the
+      // suite does not break as real time moves past those dates.
+      vi.useFakeTimers({ toFake: ['Date'] })
+      vi.setSystemTime(new Date('2026-10-05T06:00:00.000Z'))
+    })
+
+    afterEach(() => {
+      vi.useRealTimers()
+    })
+
     const facility: any = {
       id: 'fac-1',
       totalSeats: 48,
@@ -475,8 +486,9 @@ describe('CBTF Server Utilities', () => {
         // Populate reservations so <= 20% slots are open (>80% utilization)
         for (let h = 12; h < 22; h++) {
           for (let m = 0; m < 60; m += 5) {
-            // Fill 4 seats at each 5-min slot
-            if (m % 20 !== 0) {
+            // Fill 4 seats at each 5-min slot, leaving only :00 and :30 open
+            // (~83% utilization, comfortably above the 75% threshold).
+            if (m % 30 !== 0) {
               const startStr = `${day}T${h.toString().padStart(2, '0')}:${m.toString().padStart(2, '0')}:00.000Z`
               for (let seat = 1; seat <= 4; seat++) {
                 mockReservations.push({

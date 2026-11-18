@@ -6,6 +6,10 @@ import {
   calculateMaxArrivalsPerSlot,
   assignNextSeat,
   getFacilitySeatAllocationOrder,
+  getFacilitySeatProperties,
+  getEligibleSeatNumbers,
+  getStudentAccommodation,
+  getEffectiveExamDurationMinutes,
   hasAvailableCbtfSeat,
   getStudentSchedulingWindow,
   assertCbtfReservationWindowOpen,
@@ -107,9 +111,13 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     }
     currentStep = 'Checking Reservation Window'
     assertCbtfReservationWindowOpen(assignment)
-    const endTime = new Date(
-      startTime.getTime() + (assignment.cbtfDurationMinutes ?? 60) * 60 * 1000
+    currentStep = 'Applying SSD Accommodations'
+    const accommodation = await getStudentAccommodation(session.user.id)
+    const durationMinutes = getEffectiveExamDurationMinutes(
+      assignment.cbtfDurationMinutes,
+      accommodation.timeMultiplier
     )
+    const endTime = new Date(startTime.getTime() + durationMinutes * 60 * 1000)
     targetAssignmentTitle = assignment.title
     targetCourseLabel = assignment.course?.label || assignment.course?.title || null
 
@@ -268,8 +276,27 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       })
 
       const seatOrder = getFacilitySeatAllocationOrder(facility)
-      const occupiedSeatsCount = new Set(activeReservations.map(reservation => reservation.seatNumber)).size
-      if (occupiedSeatsCount >= facility.totalSeats || !hasAvailableCbtfSeat(seatOrder, activeReservations)) {
+      const seatProperties = await getFacilitySeatProperties(facility.id, tx as any)
+      const eligibleSeats = getEligibleSeatNumbers(
+        seatOrder,
+        seatProperties,
+        accommodation.requiredSeatProperties
+      )
+      if (eligibleSeats.length === 0) {
+        throw createError({
+          statusCode: 409,
+          statusMessage:
+            'No seats are configured that meet your accommodations. Please contact the testing center.'
+        })
+      }
+
+      const eligibleSeatSet = new Set(eligibleSeats)
+      const occupiedEligibleSeats = new Set(
+        activeReservations
+          .map((reservation) => reservation.seatNumber)
+          .filter((seatNumber) => eligibleSeatSet.has(seatNumber))
+      ).size
+      if (occupiedEligibleSeats >= eligibleSeats.length || !hasAvailableCbtfSeat(eligibleSeats, activeReservations)) {
         throw createError({
           statusCode: 409,
           statusMessage: 'Testing facility is completely full during this time slot'
@@ -277,7 +304,14 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       }
 
       // D. Allocate seat based on 5-minute arrival offset
-      const assignedSeat = assignNextSeat(seatOrder, startTime, endTime, activeReservations)
+      const assignedSeat = assignNextSeat(
+        seatOrder,
+        startTime,
+        endTime,
+        activeReservations,
+        undefined,
+        eligibleSeats
+      )
 
       // E. Create or reuse reservation
       let created: any

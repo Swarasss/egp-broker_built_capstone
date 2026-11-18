@@ -133,6 +133,7 @@ describe('API: Admin CBTF Proctor Management Endpoints', () => {
           firstName: true,
           lastName: true,
           email: true,
+          studentId: true,
           globalRole: true,
           avatarUrl: true
         }

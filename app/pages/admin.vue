@@ -45,6 +45,7 @@ const adminLinks = [
   { label: 'Platforms', icon: 'i-lucide-layers', to: '/admin/platforms' },
   { label: 'Testing Center', icon: 'i-lucide-landmark', to: '/admin/cbtf' },
   { label: 'Reservations', icon: 'i-lucide-calendar-clock', to: '/admin/cbtf-reservations' },
+  { label: 'SSD Accommodations', icon: 'i-lucide-accessibility', to: '/admin/cbtf-accommodations' },
   { label: 'Users', icon: 'i-lucide-users', to: '/admin/users' }
 ]
 

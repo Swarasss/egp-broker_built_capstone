@@ -5,6 +5,7 @@
  */
 
 import { z } from 'zod'
+import { CBTF_SEAT_PROPERTY_VALUES } from '../constants/cbtf'
 
 export const cbtfTimeRegex = /^([01]\d|2[0-3]):[0-5]\d$/
 
@@ -316,3 +317,29 @@ export const cbtfAdminUpdateReservationSchema = z
   )
 
 export type CbtfAdminUpdateReservationInput = z.infer<typeof cbtfAdminUpdateReservationSchema>
+
+export const cbtfSeatPropertyEnum = z.enum(CBTF_SEAT_PROPERTY_VALUES)
+
+export const cbtfSeatInputSchema = z.object({
+  seatNumber: z.number().int().min(1, 'Seat number must be at least 1').max(500),
+  properties: z.array(cbtfSeatPropertyEnum).max(20).default([])
+})
+
+export const updateCbtfSeatsInputSchema = z.object({
+  facilityId: z.string().min(1, 'Facility is required'),
+  seats: z.array(cbtfSeatInputSchema).min(1, 'At least one seat is required').max(500)
+})
+
+export type UpdateCbtfSeatsInput = z.infer<typeof updateCbtfSeatsInputSchema>
+
+export const cbtfAccommodationInputSchema = z.object({
+  timeMultiplier: z.number().min(1, 'Multiplier must be at least 1.0').max(3, 'Multiplier cannot exceed 3.0').default(1),
+  requiredSeatProperties: z.array(cbtfSeatPropertyEnum).max(20).default([]),
+  notes: z.string().trim().max(500).nullable().optional()
+})
+
+export type CbtfAccommodationInput = z.infer<typeof cbtfAccommodationInputSchema>
+
+export const cbtfAccommodationSearchSchema = z.object({
+  search: z.string().trim().max(200).optional()
+})

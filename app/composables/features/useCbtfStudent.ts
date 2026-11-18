@@ -13,6 +13,11 @@ export interface CbtfAvailabilityData {
     end: string
     isPassWindow: boolean
   }
+  accommodation: {
+    requiredSeatProperties: string[]
+    timeMultiplier: number
+    effectiveDurationMinutes: number
+  }
   activeReservation: CbtfReservationDto | null
   blocks: CbtfHalfDayBlock[]
   recommendedDays: CbtfRecommendedDay[]

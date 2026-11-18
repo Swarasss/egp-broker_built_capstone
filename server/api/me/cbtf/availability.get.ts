@@ -4,6 +4,8 @@ import { cbtfAvailabilityQuerySchema } from '@@/shared/schemas/cbtf.schema'
 import {
   getStudentSchedulingWindow,
   getAllFacilitiesAvailability,
+  getStudentAccommodation,
+  getEffectiveExamDurationMinutes,
   toCbtfReservationDto
 } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
@@ -20,6 +22,11 @@ export interface CbtfAvailabilityResponse {
     start: string
     end: string
     isPassWindow: boolean
+  }
+  accommodation: {
+    requiredSeatProperties: string[]
+    timeMultiplier: number
+    effectiveDurationMinutes: number
   }
   activeReservation: CbtfReservationDto | null
   blocks: CbtfHalfDayBlock[]
@@ -110,14 +117,20 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
   }
 
   const studentWindow = await getStudentSchedulingWindow(session.user.id, assignment)
+  const accommodation = await getStudentAccommodation(session.user.id)
+  const effectiveDurationMinutes = getEffectiveExamDurationMinutes(
+    assignment.cbtfDurationMinutes,
+    accommodation.timeMultiplier
+  )
 
   const { blocks, recommendedDays, hourlySlots } = await getAllFacilitiesAvailability(
     studentWindow,
     query.blockId || query.timeOfDayPreference,
     query.selectedDate,
     undefined,
-    assignment.cbtfDurationMinutes ?? 60,
-    query.excludeReservationId
+    effectiveDurationMinutes,
+    query.excludeReservationId,
+    accommodation.requiredSeatProperties
   )
 
   return {
@@ -128,6 +141,11 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
         start: studentWindow.start.toISOString(),
         end: studentWindow.end.toISOString(),
         isPassWindow: studentWindow.isPassWindow
+      },
+      accommodation: {
+        requiredSeatProperties: accommodation.requiredSeatProperties,
+        timeMultiplier: accommodation.timeMultiplier,
+        effectiveDurationMinutes
       },
       activeReservation: activeReservation ? toCbtfReservationDto(activeReservation) : null,
       blocks,

@@ -29,6 +29,12 @@ vi.mock('@@/server/utils/db', () => ({
       update: vi.fn()
     },
     cbtfFacility: { findMany: vi.fn().mockResolvedValue([]), findFirst: vi.fn(), findUnique: vi.fn(), create: vi.fn() },
+    cbtfSeat: { findMany: vi.fn().mockResolvedValue([]) },
+    cbtfStudentAccommodation: {
+      findUnique: vi.fn().mockResolvedValue(null),
+      upsert: vi.fn(),
+      deleteMany: vi.fn()
+    },
     cbtfScheduleException: { findFirst: vi.fn() },
     cbtfOperatingHours: { findUnique: vi.fn() },
     passRedemption: { findFirst: vi.fn() },
@@ -73,8 +79,25 @@ describe('API: CBTF Student Reservation Endpoints', () => {
   })
 
   beforeEach(() => {
-    vi.clearAllMocks()
+    // resetAllMocks also clears queued mockResolvedValueOnce entries so tests
+    // never inherit state from an earlier failure.
+    vi.resetAllMocks()
+    // Some suites call vi.restoreAllMocks(); re-establish shared defaults so
+    // tests never depend on execution order.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date('2026-10-01T00:00:00.000Z'))
+    vi.mocked(prisma.$transaction).mockImplementation((async (cb: any) => cb(prisma)) as any)
+    vi.mocked(prisma.$queryRaw).mockResolvedValue([] as any)
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([])
+    vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
+    vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
+    vi.mocked(notifyCbtfScheduleSuccess).mockResolvedValue(true as any)
+    vi.mocked(notifyCbtfScheduleFailure).mockResolvedValue(true as any)
     vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
   })
 
   describe('GET /api/me/cbtf/availability', () => {
@@ -332,7 +355,12 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
         id: 'clh1234567890123456789012',
         courseId: 'course-1',
-        isSchedulable: true
+        isSchedulable: true,
+        cbtfDurationMinutes: 60,
+        availableFrom: new Date('2026-10-01T00:00:00.000Z'),
+        acceptUntil: new Date('2026-10-15T00:00:00.000Z'),
+        scheduleWindowStart: new Date('2026-10-01T00:00:00.000Z'),
+        scheduleWindowEnd: new Date('2026-10-15T00:00:00.000Z')
       } as any)
       vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
 
@@ -849,15 +877,26 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         id: 'res-1',
         userId: 'usr-1',
         status: 'SCHEDULED',
-        assignment: { title: 'Midterm 1' }
+        assignment: {
+          id: 'asg-1',
+          title: 'Midterm 1',
+          cbtfDurationMinutes: 60,
+          availableFrom: new Date('2026-10-01T00:00:00.000Z'),
+          acceptUntil: new Date('2026-10-15T00:00:00.000Z'),
+          scheduleWindowStart: new Date('2026-10-01T00:00:00.000Z'),
+          scheduleWindowEnd: new Date('2026-10-15T00:00:00.000Z')
+        }
       } as any)
 
-      // Conflict with another reservation
-      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValueOnce({
-        id: 'res-conflict',
-        assignmentId: 'asg-2',
-        assignment: { title: 'Quiz 2' }
-      } as any)
+      // Duplicate check, completed-exam check, then the conflicting reservation
+      vi.mocked(prisma.cbtfReservation.findFirst)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({
+          id: 'res-conflict',
+          assignmentId: 'asg-2',
+          assignment: { title: 'Quiz 2' }
+        } as any)
 
       await expect(reservationPatch(event)).rejects.toThrowError(
         expect.objectContaining({
@@ -965,6 +1004,8 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
       vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
+      vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
+      vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
       vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
         id: 'fac-1', name: 'Testing Center', timezone: 'UTC', totalSeats: 48,
         seatAllocationOrder: Array.from({ length: 48 }, (_, i) => i + 1)
@@ -1123,6 +1164,144 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         })
       }))
       expect(response.data.endTime).toBe('2030-01-07T12:00:00.000Z')
+    })
+
+    describe('SSD accommodations', () => {
+      beforeEach(() => {
+        vi.mocked(notifyCbtfScheduleFailure).mockResolvedValue(true)
+        vi.spyOn(cbtfCanvas, 'syncCbtfReservationCanvasOverride').mockResolvedValue({} as any)
+        vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment(60) as any)
+        vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }: any) =>
+          reservation(data)
+        )
+        vi.mocked(prisma.cbtfReservation.update).mockImplementation(async ({ data }: any) =>
+          reservation(data)
+        )
+      })
+
+      afterEach(() => vi.mocked(cbtfCanvas.syncCbtfReservationCanvasOverride).mockRestore())
+
+      it('applies the extra-time multiplier when booking', async () => {
+        vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+          timeMultiplier: 1.5,
+          requiredSeatProperties: [],
+          isActive: true
+        } as any)
+
+        const response = await reservationsPost(
+          mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {
+            assignmentId,
+            facilityId: 'fac-1',
+            startTime
+          })
+        )
+
+        expect(response.data.endTime).toBe('2030-01-07T11:30:00.000Z')
+        expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(
+          expect.objectContaining({
+            data: expect.objectContaining({ endTime: new Date('2030-01-07T11:30:00.000Z') })
+          })
+        )
+      })
+
+      it('assigns only seats certified for the student requirements', async () => {
+        vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+          id: 'fac-1',
+          name: 'Testing Center',
+          timezone: 'UTC',
+          totalSeats: 3,
+          seatAllocationOrder: [1, 2, 3]
+        } as any)
+        vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([
+          { seatNumber: 2, properties: ['SSD'] }
+        ] as any)
+        vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+          timeMultiplier: 1,
+          requiredSeatProperties: ['SSD'],
+          isActive: true
+        } as any)
+
+        const response = await reservationsPost(
+          mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {
+            assignmentId,
+            facilityId: 'fac-1',
+            startTime
+          })
+        )
+
+        expect(response.data.seatNumber).toBe(2)
+        expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(
+          expect.objectContaining({ data: expect.objectContaining({ seatNumber: 2 }) })
+        )
+      })
+
+      it('keeps certified seats away from students without requirements', async () => {
+        vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+          id: 'fac-1',
+          name: 'Testing Center',
+          timezone: 'UTC',
+          totalSeats: 2,
+          seatAllocationOrder: [1, 2]
+        } as any)
+        vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([
+          { seatNumber: 1, properties: ['SSD'] }
+        ] as any)
+
+        const response = await reservationsPost(
+          mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {
+            assignmentId,
+            facilityId: 'fac-1',
+            startTime
+          })
+        )
+
+        expect(response.data.seatNumber).toBe(2)
+      })
+
+      it('rejects booking when no seat meets the accommodation', async () => {
+        vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+          timeMultiplier: 1,
+          requiredSeatProperties: ['SSD'],
+          isActive: true
+        } as any)
+
+        await expect(
+          reservationsPost(
+            mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {
+              assignmentId,
+              facilityId: 'fac-1',
+              startTime
+            })
+          )
+        ).rejects.toMatchObject({
+          statusCode: 409,
+          statusMessage: expect.stringContaining('meet your accommodations')
+        })
+      })
+
+      it('applies the multiplier when rescheduling', async () => {
+        vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+          id: 'res-duration',
+          userId: 'usr-1',
+          status: 'SCHEDULED',
+          startTime: new Date('2030-01-06T10:00:00.000Z'),
+          endTime: new Date('2030-01-06T11:00:00.000Z'),
+          assignment: assignment(60)
+        } as any)
+        vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+          timeMultiplier: 2,
+          requiredSeatProperties: [],
+          isActive: true
+        } as any)
+
+        const response = await reservationPatch(
+          mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, { facilityId: 'fac-1', startTime }, {
+            id: 'res-duration'
+          })
+        )
+
+        expect(response.data.endTime).toBe('2030-01-07T12:00:00.000Z')
+      })
     })
   })
 

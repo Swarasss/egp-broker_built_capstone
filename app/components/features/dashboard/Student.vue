@@ -6,6 +6,30 @@
     class="border-b-0"
   />
 
+  <div
+    v-if="
+      accommodation &&
+      (accommodation.timeMultiplier > 1 || accommodation.requiredSeatProperties.length > 0)
+    "
+    class="mb-4 flex items-start gap-3 rounded-lg border border-primary-200 bg-primary-50 p-4 dark:border-primary-900 dark:bg-primary-950/40"
+  >
+    <UIcon name="i-lucide-accessibility" class="mt-0.5 h-5 w-5 text-primary-600" />
+    <div class="text-sm">
+      <p class="font-medium text-primary-700 dark:text-primary-300">
+        Testing accommodations active
+      </p>
+      <p class="text-primary-600 dark:text-primary-400">
+        <span v-if="accommodation.timeMultiplier > 1"
+          >{{ accommodation.timeMultiplier }}× time accommodation on CBTF exams. </span
+        >
+        <span v-if="accommodation.requiredSeatProperties.length"
+          >You will be assigned a certified testing seat. </span
+        >
+        These settings are managed by the testing center.
+      </p>
+    </div>
+  </div>
+
   <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-6">
     <!-- Pass Pools -->
     <BaseCard
@@ -185,6 +209,12 @@ import { useStudentDashboard } from '~/composables/features/useStudentDashboard'
 const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
+
+const { data: accommodationResponse } = useFetch<
+  ApiResponse<{ timeMultiplier: number; requiredSeatProperties: string[] }>
+>('/api/me/cbtf/accommodation', { lazy: true })
+
+const accommodation = computed(() => accommodationResponse.value?.data ?? null)
 
 const props = withDefaults(
   defineProps<{
