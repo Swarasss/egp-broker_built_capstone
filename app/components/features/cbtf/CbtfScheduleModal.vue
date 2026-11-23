@@ -128,7 +128,7 @@
             <h4 class="text-xl font-bold text-neutral-900 dark:text-neutral-100">
               Exam Confirmed!
             </h4>
-            <p class="text-sm font-semibold">{{ selectedSlot?.facilityName }}</p>
+            <p class="text-sm font-semibold">{{ confirmedReservation.facilityName }}</p>
             <p class="text-sm text-neutral-600 dark:text-neutral-400 mt-1">
               {{
                 formatReservationTime(confirmedReservation.startTime, confirmedReservation.endTime)
@@ -211,7 +211,6 @@
               ]"
               @click="chooseBlock(block)"
             >
-              <p class="text-sm font-semibold">{{ block.facilityName }}</p>
               <!-- Top Row: Block Title & Date -->
               <div class="flex items-start justify-between gap-2">
                 <div class="space-y-0.5">
@@ -230,13 +229,10 @@
                     </UBadge>
                   </div>
                   <p class="text-xs text-neutral-500 dark:text-neutral-400">
-                    {{ block.dateLabel }} • {{ block.timeRangeLabel }}
+                    {{ block.dateLabel }} · {{ block.timezone }}
                   </p>
                 </div>
 
-                <UBadge color="neutral" variant="subtle" size="xs" class="shrink-0">
-                  {{ block.totalSeats }}-seat testing center
-                </UBadge>
               </div>
               <p class="text-xs text-neutral-500">Available arrival times</p>
             </button>
@@ -247,9 +243,7 @@
         <div v-else-if="currentStep === 2" class="space-y-4">
           <p class="text-sm text-neutral-600 dark:text-neutral-400">
             Pick an arrival time for
-            <strong>{{ selectedBlock?.facilityName }} — {{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong> ({{
-              selectedBlock?.timeRangeLabel
-            }}):
+            <strong>{{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong>.
           </p>
 
           <div
@@ -262,18 +256,17 @@
           <div v-else class="grid grid-cols-2 sm:grid-cols-4 gap-3">
             <button
               v-for="slot in availabilityData.hourlySlots"
-              :key="`${slot.facilityId}:${slot.startTime}`"
+              :key="slot.startTime"
               type="button"
               class="p-3 rounded-lg border text-center transition-all cursor-pointer font-medium text-sm flex flex-col items-center justify-center gap-1"
               :class="[
-                selectedSlot?.facilityId === slot.facilityId && selectedSlot?.startTime === slot.startTime
+                selectedSlot?.startTime === slot.startTime
                   ? 'border-primary-500 bg-primary-600 text-white font-bold shadow-sm'
                   : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700 text-neutral-900 dark:text-neutral-100'
               ]"
               @click="chooseSlot(slot)"
             >
               <UIcon name="i-lucide-clock" class="w-4 h-4" />
-              <span>{{ slot.facilityName }}</span>
               <span>{{ slot.formattedTime }}</span>
             </button>
           </div>
@@ -307,7 +300,7 @@
 
             <div class="space-y-1">
               <p class="text-xs text-neutral-500 uppercase">Testing Center</p>
-              <p class="font-semibold">{{ selectedSlot?.facilityName }}</p>
+              <p class="font-semibold">Assigned when you confirm</p>
               <p class="text-xs text-neutral-500 uppercase">Assignment</p>
               <p class="font-bold text-neutral-900 dark:text-neutral-100">
                 {{ assignment?.title || availabilityData?.assignmentTitle }}
@@ -395,8 +388,8 @@
 import type { AssignmentRow } from '@@/shared/models/assignment'
 import type {
   CbtfReservationDto,
-  CbtfHalfDayBlock,
-  CbtfHourlySlotChoice
+  CbtfStudentBlock,
+  CbtfStudentStart
 } from '@@/shared/models/cbtf'
 import { useCbtfStudent, type CbtfAvailabilityData } from '~/composables/features/useCbtfStudent'
 
@@ -423,7 +416,7 @@ const booking = ref(false)
 const cancelling = ref(false)
 
 const selectedBlockId = ref<string>('')
-const selectedSlot = ref<CbtfHourlySlotChoice | null>(null)
+const selectedSlot = ref<CbtfStudentStart | null>(null)
 const availabilityData = ref<CbtfAvailabilityData | null>(null)
 
 const effectiveDurationMinutes = computed(
@@ -459,7 +452,7 @@ const modalDescription = computed(() => {
   return props.assignment?.title || 'Testing Center Reservation'
 })
 
-const selectedBlock = computed<CbtfHalfDayBlock | undefined>(() => {
+const selectedBlock = computed<CbtfStudentBlock | undefined>(() => {
   return availabilityData.value?.blocks?.find((b) => b.id === selectedBlockId.value)
 })
 
@@ -491,14 +484,14 @@ const loadAvailability = async (blockId?: string) => {
   }
 }
 
-const chooseBlock = async (block: CbtfHalfDayBlock) => {
+const chooseBlock = async (block: CbtfStudentBlock) => {
   selectedBlockId.value = block.id
   selectedSlot.value = null
   currentStep.value = 2
   await loadAvailability(block.id)
 }
 
-const chooseSlot = (slot: CbtfHourlySlotChoice) => {
+const chooseSlot = (slot: CbtfStudentStart) => {
   selectedSlot.value = slot
   currentStep.value = 3
 }
@@ -531,14 +524,12 @@ const handleConfirmBooking = async () => {
     if (isRescheduling.value && props.existingReservation?.id) {
       result = await rescheduleReservation(
         props.existingReservation.id,
-        selectedSlot.value.startTime,
-        selectedSlot.value.facilityId
+        selectedSlot.value.startTime
       )
     } else {
       result = await createReservation(
         props.assignment.id,
-        selectedSlot.value.startTime,
-        selectedSlot.value.facilityId
+        selectedSlot.value.startTime
       )
     }
     confirmedReservation.value = result

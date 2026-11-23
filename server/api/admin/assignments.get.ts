@@ -13,8 +13,10 @@ export default defineEventHandler(async (event): Promise<ApiResponse<AssignmentR
     })
   }
 
+  
   const query = await getValidatedQuery(event, AdminAssignmentQuerySchema.parse)
   const courseCodeParam = query.c
+
 
   // Build the where clause: optionally filter by course label (code)
   const where: Record<string, unknown> = {}

@@ -1,4 +1,4 @@
-import { defineEventHandler, getRouterParam } from 'h3'
+import { createError, defineEventHandler, getRouterParam, readValidatedBody } from 'h3'
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { updateAssignmentSchema } from '@@/shared/models/assignment'
@@ -28,8 +28,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   if (!existing) throw createError({ statusCode: 404, statusMessage: 'Assignment not found' })
   const schedulingErrors = getAssignmentSchedulingErrors({
     ...existing,
-    availableFrom: body.availableFrom !== undefined ? body.availableFrom : existing.availableFrom,
-    acceptUntil: body.acceptUntil !== undefined ? body.acceptUntil : existing.acceptUntil
+    ...Object.fromEntries(Object.entries(body).filter(([, value]) => value !== undefined))
   })
   if (schedulingErrors.length) {
     throw createError({ statusCode: 400, statusMessage: schedulingErrors[0]!.message, data: schedulingErrors })
@@ -51,6 +50,10 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
         : body.acceptUntil === null
           ? null
           : undefined,
+      isSchedulable: body.isSchedulable,
+      cbtfDurationMinutes: body.cbtfDurationMinutes,
+      scheduleWindowStart: body.scheduleWindowStart ? new Date(body.scheduleWindowStart) : body.scheduleWindowStart,
+      scheduleWindowEnd: body.scheduleWindowEnd ? new Date(body.scheduleWindowEnd) : body.scheduleWindowEnd,
       published: body.published !== undefined ? body.published : undefined
     }
   })

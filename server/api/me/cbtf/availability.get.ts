@@ -10,9 +10,9 @@ import {
 } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
 import type {
-  CbtfHalfDayBlock,
+  CbtfStudentBlock,
   CbtfRecommendedDay,
-  CbtfHourlySlotChoice,
+  CbtfStudentStart,
   CbtfReservationDto
 } from '@@/shared/models/cbtf'
 
@@ -29,9 +29,9 @@ export interface CbtfAvailabilityResponse {
     effectiveDurationMinutes: number
   }
   activeReservation: CbtfReservationDto | null
-  blocks: CbtfHalfDayBlock[]
+  blocks: CbtfStudentBlock[]
   recommendedDays: CbtfRecommendedDay[]
-  hourlySlots: CbtfHourlySlotChoice[]
+  hourlySlots: CbtfStudentStart[]
 }
 
 export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailabilityResponse>> => {

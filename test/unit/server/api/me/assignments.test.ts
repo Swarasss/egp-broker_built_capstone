@@ -97,7 +97,7 @@ describe('API: Me Assignments PATCH CBTF duration', () => {
   })
 
   it.each([
-    ['custom duration', { cbtfDurationMinutes: 37 }, 37],
+    ['fixed duration', { cbtfDurationMinutes: 90 }, 90],
     ['explicit null', { cbtfDurationMinutes: null }, null],
     ['omission preserves existing duration', {}, undefined]
   ])('supports %s', async (_name, body, expected) => {

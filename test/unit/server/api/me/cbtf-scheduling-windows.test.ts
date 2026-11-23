@@ -41,16 +41,23 @@ vi.mock('h3', async () => ({
 
 const assignmentId = 'clh1234567890123456789012'
 const assignment = {
-  id: assignmentId, courseId: 'course', title: 'Exam', isSchedulable: true, cbtfDurationMinutes: 75,
+  id: assignmentId, courseId: 'course', title: 'Exam', isSchedulable: true, cbtfDurationMinutes: 90,
   availableFrom: new Date('2030-01-07T09:00:00Z'), acceptUntil: new Date('2030-01-07T12:00:00Z'),
   scheduleWindowStart: new Date('2030-01-01T00:00:00Z'), scheduleWindowEnd: new Date('2030-01-05T00:00:00Z')
 }
 const facilities = ['a', 'b'].map(id => ({
   id, name: `Center ${id}`, timezone: 'UTC', totalSeats: 24,
-  seatAllocationOrder: Array.from({ length: 24 }, (_, i) => i + 1)
+  seatAllocationOrder: Array.from({ length: 24 }, (_, i) => i + 1),
+  seats: [], scheduleExceptions: [],
+  operatingHours: [1, 2].map(dayOfWeek => ({ dayOfWeek, openTime: '08:00', closeTime: '17:00' }))
 }))
-function event(startTime = '2030-01-07T10:45:00Z') {
-  return { query: { assignmentId }, body: { assignmentId, facilityId: 'b', startTime } } as any
+function event(startTime = '2030-01-07T10:30:00Z') {
+  return { query: { assignmentId }, body: { assignmentId, startTime } } as any
+}
+
+function mockFacilities(...centers: typeof facilities) {
+  vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(centers as any)
+  vi.mocked(prisma.$queryRaw).mockResolvedValue(centers.map(({ id }) => ({ id })))
 }
 
 describe('CBTF exam dates versus reservation action dates', () => {
@@ -58,7 +65,6 @@ describe('CBTF exam dates versus reservation action dates', () => {
     vi.clearAllMocks()
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2030-01-02T00:00:00Z'))
-    vi.spyOn(Math, 'random').mockReturnValue(0.999)
     vi.stubGlobal('getUserSession', async () => ({ user: { id: 'student', globalRole: 'USER' } }))
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment as any)
     vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enrollment' } as any)
@@ -70,7 +76,7 @@ describe('CBTF exam dates versus reservation action dates', () => {
     } as any)
     vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
-    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(facilities as any)
+    mockFacilities(...facilities)
     vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(facilities[1] as any)
     vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({ openTime: '08:00', closeTime: '17:00' } as any)
@@ -93,27 +99,25 @@ describe('CBTF exam dates versus reservation action dates', () => {
     const { data } = await availabilityGet(event())
     expect(data.studentWindow.start).toBe(assignment.availableFrom.toISOString())
     expect(data.studentWindow.end).toBe(assignment.acceptUntil.toISOString())
-    expect(data.blocks.map(b => b.facilityId)).toEqual(['a', 'b'])
-    for (const facility of facilities) {
-      const slots = data.hourlySlots.filter(s => s.facilityId === facility.id)
-      expect(slots.length).toBeGreaterThan(0)
-      expect(slots.every(s => new Date(s.startTime) >= assignment.availableFrom && new Date(s.endTime) <= assignment.acceptUntil)).toBe(true)
-      expect(slots.at(-1)!.startTime).toBe('2030-01-07T10:45:00.000Z')
-      expect(slots.at(-1)!.endTime).toBe('2030-01-07T12:00:00.000Z')
-    }
+    expect(data.blocks).toHaveLength(1)
+    const slots = data.hourlySlots
+    expect(slots.length).toBeGreaterThan(0)
+    expect(slots.every(s => new Date(s.startTime) >= assignment.availableFrom && new Date(s.endTime) <= assignment.acceptUntil)).toBe(true)
+    expect(slots.at(-1)!.startTime).toBe('2030-01-07T10:30:00.000Z')
+    expect(slots.at(-1)!.endTime).toBe('2030-01-07T12:00:00.000Z')
   })
 
   it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
-    '%s books a later exam ending exactly at Accept Until, using the chosen facility', async (_method, handler) => {
+    '%s books a later exam ending exactly at Accept Until, using deterministic facility selection', async (_method, handler) => {
       const response = await handler(event())
-      expect(response.data.facilityId).toBe('b')
+      expect(response.data.facilityId).toBe('a')
       expect(response.data.endTime).toBe('2030-01-07T12:00:00.000Z')
     }
   )
 
   it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
     '%s rejects an exam ending after Accept Until or starting before Available From', async (_method, handler) => {
-      for (const start of ['2030-01-07T10:50:00Z', '2030-01-07T08:55:00Z']) {
+      for (const start of ['2030-01-07T10:35:00Z', '2030-01-07T08:55:00Z']) {
         await expect(handler(event(start))).rejects.toMatchObject({ statusCode: 400,
           statusMessage: expect.stringContaining('availability window') })
       }
@@ -138,7 +142,7 @@ describe('CBTF exam dates versus reservation action dates', () => {
     '%s allows actions exactly at reservation-window boundaries', async (_method, handler) => {
       for (const now of [assignment.scheduleWindowStart, assignment.scheduleWindowEnd]) {
         vi.setSystemTime(now)
-        await expect(handler(event())).resolves.toMatchObject({ data: { facilityId: 'b' } })
+        await expect(handler(event())).resolves.toMatchObject({ data: { facilityId: 'a' } })
       }
     }
   )
@@ -150,50 +154,49 @@ describe('CBTF exam dates versus reservation action dates', () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
         id: 'reservation', userId: 'student', status: 'SCHEDULED', assignment: laterExam
       } as any)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({ openTime: '08:00', closeTime: '12:00' } as any)
+      mockFacilities(...facilities.map(facility => ({
+        ...facility, operatingHours: [{ dayOfWeek: 1, openTime: '08:00', closeTime: '12:00' }]
+      })))
       await expect(handler(event())).resolves.toMatchObject({ data: { endTime: '2030-01-07T12:00:00.000Z' } })
-      await expect(handler(event('2030-01-07T10:50:00Z'))).rejects.toMatchObject({ statusCode: 400,
-        statusMessage: expect.stringContaining('closing time') })
+      await expect(handler(event('2030-01-07T10:35:00Z'))).rejects.toMatchObject({ statusCode: 409 })
     }
   )
 
   it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
-    '%s rejects a fifth simultaneous start at a 48-seat facility', async (_method, handler) => {
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
-        ...facilities[1], totalSeats: 48, seatAllocationOrder: Array.from({ length: 48 }, (_, i) => i + 1)
-      } as any)
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(4)
-      await expect(handler(event())).rejects.toMatchObject({ statusCode: 409,
-        statusMessage: expect.stringContaining('Arrival capacity') })
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(3)
-      await expect(handler(event())).resolves.toMatchObject({ data: { facilityId: 'b' } })
+    '%s enforces the exact start limit at a 48-seat facility', async (_method, handler) => {
+      mockFacilities({ ...facilities[0]!, totalSeats: 48, seatAllocationOrder: Array.from({ length: 48 }, (_, i) => i + 1) })
+      const simultaneous = Array.from({ length: 4 }, (_, i) => ({
+        facilityId: 'a', seatNumber: i + 1,
+        startTime: new Date('2030-01-07T10:30Z'), endTime: new Date('2030-01-07T12:00Z')
+      }))
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(simultaneous as any)
+      await expect(handler(event())).rejects.toMatchObject({ statusCode: 409 })
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(simultaneous.slice(0, 3) as any)
+      await expect(handler(event())).resolves.toMatchObject({ data: { facilityId: 'a', seatNumber: 4 } })
       expect(prisma.$queryRaw).toHaveBeenCalled()
     }
   )
 
   it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
-    '%s allocates a free physical seat despite repeated records on another seat', async (_method, handler) => {
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
-        ...facilities[1], totalSeats: 2, seatAllocationOrder: [2, 1]
-      } as any)
-      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([{ seatNumber: 1 }, { seatNumber: 1 }] as any)
+    '%s allocates a physical seat free for the full interval', async (_method, handler) => {
+      mockFacilities({ ...facilities[0]!, totalSeats: 2, seatAllocationOrder: [2, 1] })
+      const first = { facilityId: 'a', seatNumber: 1,
+        startTime: new Date('2030-01-07T10:25Z'), endTime: new Date('2030-01-07T11:00Z') }
+      const second = { ...first, startTime: new Date('2030-01-07T11:20Z'), endTime: new Date('2030-01-07T12:00Z') }
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([first, second] as any)
       await expect(handler(event())).resolves.toMatchObject({ data: { seatNumber: 2 } })
-      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([{ seatNumber: 1 }, { seatNumber: 2 }] as any)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([first, { ...second, seatNumber: 2 }] as any)
       await expect(handler(event())).rejects.toMatchObject({ statusCode: 409 })
-      expect(prisma.cbtfReservation.findMany).toHaveBeenCalledWith(expect.objectContaining({
-        where: expect.objectContaining({ startTime: { lt: new Date('2030-01-07T12:00:00Z') },
-          endTime: { gt: new Date('2030-01-07T10:45:00Z') } })
-      }))
     }
   )
 
   it('preserves the existing retake-pass exam window override', async () => {
     vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue({
-      id: 'pass', availableFrom: new Date('2030-01-08T09:00:00Z'), acceptUntil: new Date('2030-01-08T10:15:00Z')
+      id: 'pass', availableFrom: new Date('2030-01-08T09:00:00Z'), acceptUntil: new Date('2030-01-08T10:30:00Z')
     } as any)
     const { data } = await availabilityGet(event())
     expect(data.studentWindow.isPassWindow).toBe(true)
-    expect(data.hourlySlots.every(s => s.startTime === '2030-01-08T09:00:00.000Z' && s.endTime === '2030-01-08T10:15:00.000Z')).toBe(true)
+    expect(data.hourlySlots.every(s => s.startTime === '2030-01-08T09:00:00.000Z' && s.endTime === '2030-01-08T10:30:00.000Z')).toBe(true)
   })
 
   it.each([

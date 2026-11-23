@@ -69,13 +69,11 @@ export const cbtfProctorShiftInputSchema = z
   })
 
 export const createReservationInputSchema = z.object({
-  facilityId: z.string().trim().min(1),
   assignmentId: z.string().cuid(),
   startTime: z.string().datetime()
 })
 
 export const rescheduleReservationInputSchema = z.object({
-  facilityId: z.string().trim().min(1),
   startTime: z.string().datetime()
 })
 

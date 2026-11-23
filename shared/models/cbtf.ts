@@ -67,6 +67,7 @@ export interface CbtfProctorShiftDto {
 export interface CbtfReservationDto {
   id: string
   facilityId: string
+  facilityName?: string
   assignmentId: string
   assignmentTitle?: string
   userId: string
@@ -134,6 +135,16 @@ export interface CbtfHourlySlotChoice {
   endTime: string // ISO string
   formattedTime: string // e.g. "9:15 AM"
 }
+
+export interface CbtfStudentBlock {
+  id: string
+  label: string
+  dateLabel: string
+  timezone: string
+  isCurrentBlock: boolean
+}
+
+export type CbtfStudentStart = Pick<CbtfHourlySlotChoice, 'startTime' | 'endTime' | 'formattedTime'>
 
 /** Certified properties for one physical seat. Empty properties = ordinary seat. */
 export interface CbtfSeatDto {

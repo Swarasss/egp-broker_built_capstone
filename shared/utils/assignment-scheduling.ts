@@ -1,3 +1,18 @@
+export const CBTF_DURATION_OPTIONS = [
+  { value: 30, label: '30 minutes' },
+  { value: 60, label: '1 hour' },
+  { value: 90, label: '1.5 hours' },
+  { value: 120, label: '2 hours' },
+  { value: 150, label: '2.5 hours' },
+  { value: 180, label: '3 hours' },
+  { value: 210, label: '3.5 hours' },
+  { value: 240, label: '4 hours' }
+]
+
+export function isAllowedCbtfDuration(value: unknown): value is number {
+  return CBTF_DURATION_OPTIONS.some(option => option.value === value)
+}
+
 /** Shared instructor validation; accepts local form dates, API strings, or database dates. */
 export interface AssignmentSchedulingConfig {
   isSchedulable?: boolean | null
@@ -31,10 +46,10 @@ export function getAssignmentSchedulingErrors(
       errors.push({ name: endKey, message: `${startLabel} must be before ${endLabel}.` })
     }
   }
-  const duration = config.cbtfDurationMinutes ?? 60
-  if (!Number.isInteger(duration) || duration <= 0) {
-    errors.push({ name: 'cbtfDurationMinutes', message: 'Exam duration must be a positive whole number of minutes.' })
-  } else if (config.availableFrom && config.acceptUntil) {
+  const duration = config.cbtfDurationMinutes
+  if ((required || duration != null) && !isAllowedCbtfDuration(duration)) {
+    errors.push({ name: 'cbtfDurationMinutes', message: 'Select a CBTF exam duration from 30 minutes to 4 hours in 30-minute increments.' })
+  } else if (duration != null && config.availableFrom && config.acceptUntil) {
     const length = new Date(config.acceptUntil).getTime() - new Date(config.availableFrom).getTime()
     if ((config.isSchedulable === true || (config.isSchedulable === undefined && config.cbtfDurationMinutes != null)) && length > 0 && length < duration * 60_000) {
       errors.push({ name: 'acceptUntil', message: `Available From to Accept Until must fit the full ${duration}-minute exam.` })

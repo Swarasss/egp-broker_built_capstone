@@ -147,12 +147,10 @@ describe('CBTF Shared Schemas', () => {
   describe('createReservationInputSchema and rescheduleReservationInputSchema', () => {
     it('validates reservation request inputs', () => {
       const createInput = {
-        facilityId: 'fac-1',
         assignmentId: 'clh1234567890123456789012',
         startTime: '2026-09-10T09:15:00.000Z'
       }
       const rescheduleInput = {
-        facilityId: 'fac-2',
         startTime: '2026-09-10T14:30:00.000Z'
       }
       expect(createReservationInputSchema.safeParse(createInput).success).toBe(true)
@@ -191,7 +189,6 @@ describe('CBTF Shared Schemas', () => {
     it('validates reservation row projection', () => {
       const row = {
         id: 'res-1',
-        facilityId: 'fac-1',
         assignmentId: 'asg-1',
         assignmentTitle: 'Midterm 1',
         userId: 'usr-1',
@@ -213,7 +210,6 @@ describe('CBTF Shared Schemas', () => {
     it('validates reservation row with CHECKED_OUT status', () => {
       const row = {
         id: 'res-2',
-        facilityId: 'fac-1',
         assignmentId: 'asg-1',
         assignmentTitle: 'Midterm 1',
         userId: 'usr-2',
@@ -282,7 +278,7 @@ describe('CBTF Shared Schemas', () => {
         acceptUntil: '2026-09-20T18:00:00.000Z',
         published: true,
         isSchedulable: true,
-        cbtfDurationMinutes: 75,
+        cbtfDurationMinutes: 90,
         scheduleWindowStart: '2026-09-10T08:00:00.000Z',
         scheduleWindowEnd: '2026-09-19T18:00:00.000Z',
         createdAt: '2026-09-01T00:00:00.000Z'
@@ -295,7 +291,7 @@ describe('CBTF Shared Schemas', () => {
         availableFrom: schedulableRow.availableFrom,
         acceptUntil: schedulableRow.acceptUntil,
         isSchedulable: true,
-        cbtfDurationMinutes: 75,
+        cbtfDurationMinutes: 90,
         scheduleWindowStart: '2026-09-10T08:00:00.000Z',
         scheduleWindowEnd: '2026-09-19T18:00:00.000Z'
       }

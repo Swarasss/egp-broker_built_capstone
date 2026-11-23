@@ -28,7 +28,7 @@ const windowStart = new Date('2030-01-07T09:10:00Z')
 const windowEnd = new Date('2030-01-07T11:00:00Z')
 const facilities = ['a', 'b'].map(id => ({
   id, name: `Center ${id}`, timezone: 'UTC', totalSeats: 1,
-  operatingHours: [], scheduleExceptions: []
+  operatingHours: [{ dayOfWeek: 1, openTime: '08:00', closeTime: '17:00' }], scheduleExceptions: [], seats: []
 }))
 const assignment = {
   id: assignmentId, courseId: 'course-1', title: 'Exam', isSchedulable: true,
@@ -50,8 +50,6 @@ describe('Step 3 student CBTF availability', () => {
     vi.resetAllMocks()
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2030-01-01T00:00:00Z'))
-    // Pick the last candidate in each half-hour so the exact end boundary is observable.
-    vi.spyOn(Math, 'random').mockReturnValue(0.999)
     vi.stubGlobal('getUserSession', async () => ({ user: { id: 'student', globalRole: 'USER' } }))
     reservations = []
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment as any)
@@ -68,7 +66,7 @@ describe('Step 3 student CBTF availability', () => {
     )
     // Model the database predicates, including overlap and exclusion, instead of returning all rows.
     vi.mocked(prisma.cbtfReservation.findMany).mockImplementation(async ({ where }: any) =>
-      reservations.filter(r => r.facilityId === where.facilityId && r.id !== where.id?.not &&
+      reservations.filter(r => where.facilityId.in.includes(r.facilityId) && r.id !== where.id?.not &&
         where.status.in.includes(r.status) && r.startTime < where.startTime.lt && r.endTime > where.endTime.gt) as any
     )
   })
@@ -82,30 +80,22 @@ describe('Step 3 student CBTF availability', () => {
   it.each([60, 90])('clips every facility to exact window boundaries with a %i-minute exam', async duration => {
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue({ ...assignment, cbtfDurationMinutes: duration } as any)
     const { data } = await request()
-    expect(data.blocks.map(b => b.facilityId)).toEqual(['a', 'b'])
-    expect(data.blocks.every(b => b.totalSeats === 1)).toBe(true)
-    for (const facility of facilities) {
-      const slots = data.hourlySlots.filter(s => s.facilityId === facility.id)
-      expect(slots.length).toBeGreaterThan(0)
-      for (const slot of slots) {
-        expect(new Date(slot.startTime).getTime()).toBeGreaterThanOrEqual(windowStart.getTime())
-        expect(new Date(slot.endTime).getTime()).toBeLessThanOrEqual(windowEnd.getTime())
-        expect(new Date(slot.endTime).getTime() - new Date(slot.startTime).getTime()).toBe(duration * 60000)
-        expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
-      }
-      expect(slots.at(-1)!.endTime).toBe(windowEnd.toISOString())
-      // Counts also exclude invalid starts, before random hourly choices are made.
-      expect(data.blocks.find(b => b.facilityId === facility.id)!.totalSlotsCount).toBe((110 - duration) / 5 + 1)
+    expect(data.blocks).toHaveLength(1)
+    expect(data.hourlySlots).toHaveLength((110 - duration) / 5 + 1)
+    expect(data.hourlySlots.at(-1)!.endTime).toBe(windowEnd.toISOString())
+    for (const slot of data.hourlySlots) {
+      expect(+new Date(slot.startTime)).toBeGreaterThanOrEqual(+windowStart)
+      expect(+new Date(slot.endTime) - +new Date(slot.startTime)).toBe(duration * 60_000)
+      expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
     }
   })
 
   it('allows a slot starting exactly at the window start', async () => {
-    vi.mocked(Math.random).mockReturnValue(0)
     const { data } = await request()
-    expect(data.hourlySlots.filter(s => s.startTime === windowStart.toISOString())).toHaveLength(2)
+    expect(data.hourlySlots.filter(s => s.startTime === windowStart.toISOString())).toHaveLength(1)
   })
 
-  it('returns no blocks when the full custom duration cannot fit inside the window', async () => {
+  it('returns no blocks when the full duration cannot fit inside the window', async () => {
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue({ ...assignment, cbtfDurationMinutes: 120 } as any)
     const { data } = await request()
     expect(data.blocks).toEqual([])
@@ -119,16 +109,16 @@ describe('Step 3 student CBTF availability', () => {
     } as any)
     const { data } = await request()
     expect(data.studentWindow.isPassWindow).toBe(true)
-    expect(data.hourlySlots).toHaveLength(2)
+    expect(data.hourlySlots).toHaveLength(1)
     expect(data.hourlySlots.every(s => s.startTime === '2030-01-07T10:15:00.000Z' && s.endTime === '2030-01-07T11:15:00.000Z')).toBe(true)
   })
 
   it('excludes the current reservation only for rescheduling, across facilities', async () => {
     reservations = [current]
     const normal = await request()
-    expect(normal.data.blocks.map(b => b.facilityId)).toEqual(['b'])
+    expect(normal.data.recommendedDays.map(b => b.facilityId)).toEqual(['b'])
     const rescheduling = await request('current')
-    expect(rescheduling.data.blocks.map(b => b.facilityId)).toEqual(['a', 'b'])
+    expect(rescheduling.data.recommendedDays.map(b => b.facilityId)).toEqual(['a', 'b'])
     expect(rescheduling.data.activeReservation?.id).toBe('current')
     expect(prisma.cbtfReservation.findMany).toHaveBeenCalledWith(expect.objectContaining({
       where: expect.objectContaining({ id: { not: 'current' }, startTime: { lt: windowEnd }, endTime: { gt: windowStart } })
@@ -138,8 +128,8 @@ describe('Step 3 student CBTF availability', () => {
   it('still counts every other overlapping reservation, including starts before the window', async () => {
     reservations = [current, { ...current, id: 'other', userId: 'another-student' }]
     const { data } = await request('current')
-    expect(data.blocks.map(b => b.facilityId)).toEqual(['b'])
-    expect(data.hourlySlots.every(s => s.facilityId === 'b')).toBe(true)
+    expect(data.recommendedDays.map(b => b.facilityId)).toEqual(['b'])
+    expect(data.hourlySlots.length).toBeGreaterThan(0)
   })
 
   it.each([

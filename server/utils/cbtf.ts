@@ -6,7 +6,8 @@
  */
 
 import { createError } from 'h3'
-import type { PrismaClient } from '@prisma/client'
+import { isAllowedCbtfDuration } from '@@/shared/utils/assignment-scheduling'
+import type { Prisma, PrismaClient } from '@prisma/client'
 import prisma from '@@/server/utils/db'
 import { sendCbtfIncidentNotification } from './cbtf-notifications'
 import type {
@@ -15,6 +16,8 @@ import type {
   CbtfRecommendedDay,
   CbtfHalfDayBlock,
   CbtfHourlySlotChoice,
+  CbtfStudentBlock,
+  CbtfStudentStart,
   CbtfReservationDto
 } from '@@/shared/models/cbtf'
 
@@ -168,6 +171,29 @@ export async function getFacilityOperatingHoursForDate(
   }
 }
 
+/** Resolves preloaded facility hours using the requested local calendar date. */
+export function resolveFacilityHours(
+  facility: {
+    operatingHours: { dayOfWeek: number; openTime: string; closeTime: string }[]
+    scheduleExceptions: {
+      date: Date; isClosed: boolean; openTime: string | null; closeTime: string | null; reason: string | null
+    }[]
+  },
+  date: string,
+  timezone: string
+): FacilityOperatingHoursResult {
+  const exception = facility.scheduleExceptions.find(item => extractCalendarDate(item.date, timezone) === date)
+  if (exception?.isClosed) {
+    return { isOpen: false, openTime: null, closeTime: null, reason: exception.reason }
+  }
+  if (exception?.openTime && exception.closeTime) {
+    return { isOpen: true, openTime: exception.openTime, closeTime: exception.closeTime, reason: exception.reason }
+  }
+  const dayOfWeek = new Date(date + 'T00:00:00Z').getUTCDay()
+  const weekly = facility.operatingHours.find(item => item.dayOfWeek === dayOfWeek)
+  return { isOpen: !!weekly, openTime: weekly?.openTime ?? null, closeTime: weekly?.closeTime ?? null, reason: null }
+}
+
 /**
  * Calculates arrival throttling capacity: ceil(totalSeats / 12).
  */
@@ -251,10 +277,10 @@ export function getEffectiveExamDurationMinutes(
   baseDurationMinutes?: number | null,
   timeMultiplier?: number | null
 ): number {
-  const base =
-    Number.isFinite(baseDurationMinutes) && (baseDurationMinutes as number) > 0
-      ? (baseDurationMinutes as number)
-      : 60
+  const base = baseDurationMinutes ?? 60
+  if (!isAllowedCbtfDuration(base)) {
+    throw createError({ statusCode: 400, statusMessage: 'Assignment has an invalid CBTF exam duration' })
+  }
   const multiplier =
     Number.isFinite(timeMultiplier) && (timeMultiplier as number) >= 1
       ? (timeMultiplier as number)
@@ -265,7 +291,7 @@ export function getEffectiveExamDurationMinutes(
 /** Loads the active accommodation for a student, falling back to no extra time. */
 export async function getStudentAccommodation(
   userId: string,
-  tx: PrismaClient | typeof prisma = prisma
+  tx: Prisma.TransactionClient = prisma
 ): Promise<StudentAccommodationSnapshot> {
   const accommodation = await (tx as any).cbtfStudentAccommodation.findUnique({
     where: { userId },
@@ -486,7 +512,7 @@ export async function getStudentSchedulingWindow(
     dueDate: Date | null
     acceptUntil: Date | null
   },
-  tx: PrismaClient | typeof prisma = prisma
+  tx: Prisma.TransactionClient = prisma
 ): Promise<StudentSchedulingWindow> {
   // Check if student redeemed a pass for this assignment
   const latestRedemption = await (tx as any).passRedemption.findFirst({
@@ -544,7 +570,7 @@ function formatArrivalRange(slots: SlotAvailability[], timeZone: string): string
  * - If all evaluated blocks have utilization > 75%, offers the next 5 blocks instead of 4.
  * - Highlights blocks with utilization > 60%.
  */
-/** Read-only availability across all centers; block IDs include the facility identity. */
+/** Unions timestamps across centers that share a local calendar and half-day block. */
 export async function getAllFacilitiesAvailability(
   studentWindow: StudentSchedulingWindow,
   preferenceOrBlockId?: string,
@@ -555,34 +581,65 @@ export async function getAllFacilitiesAvailability(
   requiredSeatProperties: string[] = []
 ) {
   const facilities = await tx.cbtfFacility.findMany({
-    orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
-    include: { operatingHours: true, scheduleExceptions: true }
+    orderBy: { id: 'asc' },
+    include: { operatingHours: true, scheduleExceptions: true, seats: true }
   })
-  const results = await Promise.all(facilities.map(async (facility) => {
-    const prefix = `${facility.id}:`
-    const isSelectedFacility = preferenceOrBlockId?.startsWith(prefix)
-    const seatProperties = await getFacilitySeatProperties(facility.id, tx)
-    const eligibleSeatNumbers = getEligibleSeatNumbers(
+  if (!facilities.length) return { blocks: [], recommendedDays: [], hourlySlots: [] }
+
+  const reservations = await tx.cbtfReservation.findMany({
+    where: {
+      facilityId: { in: facilities.map(facility => facility.id) },
+      status: { in: ['SCHEDULED', 'CHECKED_IN'] },
+      ...(excludeReservationId ? { id: { not: excludeReservationId } } : {}),
+      startTime: { lt: studentWindow.end },
+      endTime: { gt: new Date(Math.max(+studentWindow.start, Date.now())) }
+    },
+    select: { facilityId: true, startTime: true, endTime: true, seatNumber: true }
+  })
+  const byFacility = Map.groupBy(reservations, reservation => reservation.facilityId)
+  const [blockId, blockTimezone] = preferenceOrBlockId?.split(':') ?? []
+  const results = await Promise.all(facilities.map(async facility => {
+    const timezone = getFacilityTimezone(facility)
+    const eligibleSeats = getEligibleSeatNumbers(
       getFacilitySeatAllocationOrder(facility),
-      seatProperties,
+      new Map(facility.seats.map(seat => [seat.seatNumber, seat.properties])),
       requiredSeatProperties
     )
     const result = await getRecommendedDaysAndSlots(
-      facility, studentWindow,
-      isSelectedFacility ? preferenceOrBlockId!.slice(prefix.length) : preferenceOrBlockId,
-      selectedDateStr, tx, durationMinutes, excludeReservationId, eligibleSeatNumbers
+      facility, studentWindow, blockId, selectedDateStr, tx, durationMinutes,
+      excludeReservationId, eligibleSeats, byFacility.get(facility.id) ?? []
     )
-    return {
-      ...result,
-      blocks: result.blocks.map(block => ({ ...block, id: `${prefix}${block.id}` })),
-      hourlySlots: preferenceOrBlockId?.includes(':') && !isSelectedFacility
-        ? [] : result.hourlySlots
-    }
+    return { ...result, timezone }
   }))
+
+  const blocks = new Map<string, CbtfStudentBlock>()
+  const slots = new Map<string, CbtfStudentStart>()
+  for (const result of results) {
+    const { timezone } = result
+    for (const block of result.blocks) {
+      const id = `${block.id}:${timezone}`
+      blocks.set(id, {
+        id,
+        label: block.label,
+        dateLabel: block.dateLabel,
+        timezone,
+        isCurrentBlock: block.isCurrentBlock || (blocks.get(id)?.isCurrentBlock ?? false)
+      })
+    }
+    if (blockTimezone && timezone !== blockTimezone) continue
+    for (const slot of result.hourlySlots) {
+      const { startTime, endTime, formattedTime } = slot
+      slots.set(startTime, { startTime, endTime, formattedTime })
+    }
+  }
   return {
-    blocks: results.flatMap(result => result.blocks),
+    blocks: [...blocks.values()].sort((a, b) =>
+      a.id.slice(0, 10).localeCompare(b.id.slice(0, 10)) ||
+      a.timezone.localeCompare(b.timezone) ||
+      Number(b.id.includes('-morning:')) - Number(a.id.includes('-morning:'))
+    ),
     recommendedDays: results.flatMap(result => result.recommendedDays),
-    hourlySlots: results.flatMap(result => result.hourlySlots)
+    hourlySlots: [...slots.values()].sort((a, b) => a.startTime.localeCompare(b.startTime))
   }
 }
 
@@ -591,10 +648,11 @@ export async function getRecommendedDaysAndSlots(
   studentWindow: StudentSchedulingWindow,
   preferenceOrBlockId?: string,
   selectedDateStr?: string,
-  tx: PrismaClient | typeof prisma = prisma,
+  tx: Prisma.TransactionClient = prisma,
   durationMinutes: number = 60,
   excludeReservationId?: string,
-  eligibleSeatNumbers?: number[]
+  eligibleSeatNumbers?: number[],
+  preloadedReservations?: Pick<CbtfReservation, 'startTime' | 'endTime' | 'seatNumber'>[]
 ): Promise<{
   blocks: CbtfHalfDayBlock[]
   recommendedDays: CbtfRecommendedDay[]
@@ -606,7 +664,7 @@ export async function getRecommendedDaysAndSlots(
   const searchEnd = new Date(studentWindow.end)
 
   // Fetch all active reservations in the window once to avoid N+1 queries
-  const allReservations: CbtfReservation[] = await (tx as any).cbtfReservation.findMany({
+  const allReservations = preloadedReservations ?? await tx.cbtfReservation.findMany({
     where: {
       facilityId: facility.id,
       status: { in: ['SCHEDULED', 'CHECKED_IN'] },
@@ -660,7 +718,9 @@ export async function getRecommendedDaysAndSlots(
     const dayStartUtc = combineDateAndTime(dateStr, '00:00', timeZone)
     const dayEndUtc = combineDateAndTime(dateStr, '23:59', timeZone)
 
-    const hours = await getFacilityOperatingHoursForDate(facility.id, dayStartUtc, tx, timeZone)
+    const hours = preloadedReservations
+      ? resolveFacilityHours(facility, dateStr, timeZone)
+      : await getFacilityOperatingHoursForDate(facility.id, dayStartUtc, tx as PrismaClient, timeZone)
 
     if (hours.isOpen && hours.openTime && hours.closeTime) {
       const dayReservations = allReservations.filter(
@@ -852,12 +912,15 @@ export async function getRecommendedDaysAndSlots(
   })
 
   // Determine which block to pick hourly slots for
-  let chosenBlockItem = selectedBlockItems[0]
+  let chosenBlockItem: (typeof selectedBlockItems)[number] | undefined = selectedBlockItems[0]
 
   if (preferenceOrBlockId) {
-    const matchById = selectedBlockItems.find((i) => i.block.id === preferenceOrBlockId)
+    const blockItems = preloadedReservations ? candidateBlockItems : selectedBlockItems
+    const matchById = blockItems.find(i => i.block.id === preferenceOrBlockId)
     if (matchById) {
       chosenBlockItem = matchById
+    } else if (preloadedReservations && /^\d{4}-/.test(preferenceOrBlockId)) {
+      chosenBlockItem = undefined
     } else if (selectedDateStr) {
       const matchByDatePref = selectedBlockItems.find(
         (i) =>
@@ -881,7 +944,19 @@ export async function getRecommendedDaysAndSlots(
   }
 
   let hourlySlots: CbtfHourlySlotChoice[] = []
-  if (chosenBlockItem) {
+  if (chosenBlockItem && preloadedReservations) {
+    hourlySlots = chosenBlockItem.openSlots.map(slot => {
+      const parts = getLocalTimeParts(slot.startTime, timeZone)
+      return {
+        facilityId: facility.id,
+        facilityName: facility.name,
+        hour: parts.hour24,
+        startTime: slot.startTime.toISOString(),
+        endTime: slot.endTime.toISOString(),
+        formattedTime: `${parts.formattedTime} (${timeZone})`
+      }
+    })
+  } else if (chosenBlockItem) {
     // Group slots by half-hour period (e.g. 09:00, 09:30, 10:00, ...) in facility timezone
     const slotsByHalfHour = new Map<number, SlotAvailability[]>()
     for (const slot of chosenBlockItem.openSlots) {
@@ -944,6 +1019,7 @@ export function toCbtfReservationDto(res: any): CbtfReservationDto {
   return {
     id: res.id,
     facilityId: res.facilityId,
+    facilityName: res.facility?.name,
     assignmentId: res.assignmentId,
     assignmentTitle: res.assignment?.title,
     userId: res.userId,

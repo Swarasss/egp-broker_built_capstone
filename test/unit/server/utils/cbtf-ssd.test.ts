@@ -12,7 +12,7 @@ describe('CBTF SSD accommodations', () => {
   describe('getEffectiveExamDurationMinutes', () => {
     it('leaves standard time unchanged', () => {
       expect(getEffectiveExamDurationMinutes(60, 1)).toBe(60)
-      expect(getEffectiveExamDurationMinutes(20, 1)).toBe(20)
+      expect(getEffectiveExamDurationMinutes(240, 1)).toBe(240)
     })
 
     it('applies the extra-time multiplier', () => {
@@ -22,14 +22,16 @@ describe('CBTF SSD accommodations', () => {
     })
 
     it('rounds up to the next 5-minute boundary', () => {
-      expect(getEffectiveExamDurationMinutes(25, 1.5)).toBe(40)
-      expect(getEffectiveExamDurationMinutes(45, 1.25)).toBe(60)
+      expect(getEffectiveExamDurationMinutes(30, 1.25)).toBe(40)
+      expect(getEffectiveExamDurationMinutes(90, 1.25)).toBe(115)
     })
 
     it('falls back to a 60-minute standard duration for invalid input', () => {
       expect(getEffectiveExamDurationMinutes(undefined, undefined)).toBe(60)
-      expect(getEffectiveExamDurationMinutes(0, 1.5)).toBe(90)
-      expect(getEffectiveExamDurationMinutes(-30, 1.5)).toBe(90)
+      expect(getEffectiveExamDurationMinutes(null, 1.5)).toBe(90)
+      for (const minutes of [0, -30, 45, 75, 250]) {
+        expect(() => getEffectiveExamDurationMinutes(minutes, 1)).toThrow(/invalid CBTF exam duration/)
+      }
       expect(getEffectiveExamDurationMinutes(60, 0.5)).toBe(60)
     })
   })

@@ -2,8 +2,8 @@ import type { ApiResponse } from '@@/shared/types/api'
 import type {
   CbtfReservationDto,
   CbtfRecommendedDay,
-  CbtfHalfDayBlock,
-  CbtfHourlySlotChoice
+  CbtfStudentBlock,
+  CbtfStudentStart
 } from '@@/shared/models/cbtf'
 
 export interface CbtfAvailabilityData {
@@ -19,9 +19,9 @@ export interface CbtfAvailabilityData {
     effectiveDurationMinutes: number
   }
   activeReservation: CbtfReservationDto | null
-  blocks: CbtfHalfDayBlock[]
+  blocks: CbtfStudentBlock[]
   recommendedDays: CbtfRecommendedDay[]
-  hourlySlots: CbtfHourlySlotChoice[]
+  hourlySlots: CbtfStudentStart[]
 }
 
 export function useCbtfStudent() {
@@ -93,13 +93,12 @@ export function useCbtfStudent() {
 
   const createReservation = async (
     assignmentId: string,
-    startTime: string,
-    facilityId: string
+    startTime: string
   ): Promise<CbtfReservationDto> => {
     try {
       const res = await $fetch<ApiResponse<CbtfReservationDto>>('/api/me/cbtf/reservations', {
         method: 'POST',
-        body: { assignmentId, facilityId, startTime }
+        body: { assignmentId, startTime }
       })
       toast.add({
         title: 'Exam Scheduled Successfully',
@@ -120,15 +119,14 @@ export function useCbtfStudent() {
 
   const rescheduleReservation = async (
     reservationId: string,
-    newStartTime: string,
-    facilityId: string
+    newStartTime: string
   ): Promise<CbtfReservationDto> => {
     try {
       const res = await $fetch<ApiResponse<CbtfReservationDto>>(
         `/api/me/cbtf/reservations/${reservationId}`,
         {
           method: 'PATCH',
-          body: { facilityId, startTime: newStartTime }
+          body: { startTime: newStartTime }
         }
       )
       toast.add({

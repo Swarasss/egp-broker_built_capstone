@@ -59,7 +59,7 @@ describe.each([
   ['create', createAssignmentSchema, { courseId: 'c1' }],
   ['update', updateAssignmentSchema, {}]
 ] as const)('%s CBTF duration validation', (_name, schema, base) => {
-  it.each([20, 37, 120, null])('accepts and preserves %s', (duration) => {
+  it.each([30, 60, 90, 120, 150, 180, 210, 240, null])('accepts and preserves %s', (duration) => {
     expect(schema.parse({ ...base, cbtfDurationMinutes: duration })).toHaveProperty(
       'cbtfDurationMinutes', duration
     )
@@ -69,7 +69,7 @@ describe.each([
     expect(schema.parse(base)).not.toHaveProperty('cbtfDurationMinutes')
   })
 
-  it.each([0, -1, 1.5, '20'])('rejects %s', (duration) => {
+  it.each([0, -1, 1.5, 45, 75, 250, '60'])('rejects %s', (duration) => {
     expect(schema.safeParse({ ...base, cbtfDurationMinutes: duration }).success).toBe(false)
   })
 })

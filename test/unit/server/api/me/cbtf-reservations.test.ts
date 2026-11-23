@@ -49,6 +49,24 @@ vi.stubGlobal('getUserSession', (event: any) =>
 )
 
 describe('API: CBTF Student Reservation Endpoints', () => {
+  function configuredFacility(
+    facility: { id: string; totalSeats: number; name?: string; timezone?: string; seatAllocationOrder?: number[] },
+    openTime = '08:00',
+    closeTime = '17:00'
+  ) {
+    return {
+      ...facility,
+      seats: [] as { seatNumber: number; properties: string[] }[],
+      operatingHours: Array.from({ length: 7 }, (_, dayOfWeek) => ({ dayOfWeek, openTime, closeTime })),
+      scheduleExceptions: []
+    }
+  }
+
+  function mockFacilities(...facilities: ReturnType<typeof configuredFacility>[]) {
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(facilities as any)
+    vi.mocked(prisma.$queryRaw).mockResolvedValue(facilities.map(({ id }) => ({ id })))
+  }
+
   const mockEvent = (
     user: any = { id: 'usr-1', globalRole: 'USER' },
     query = {},
@@ -126,63 +144,39 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       )
     })
 
-    it.each([60, 90])('returns facility-specific options and closing limits for a %i-minute exam', async (duration) => {
+    it.each([90, 240])('merges the available five-minute starts for a %i-minute exam', async duration => {
       vi.useFakeTimers()
       vi.setSystemTime(new Date('2026-09-30T00:00:00Z'))
-      vi.spyOn(Math, 'random').mockReturnValue(0.999)
       try {
         const assignmentId = 'clh1234567890123456789012'
         vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
           id: assignmentId, courseId: 'course-1', title: 'Exam', isSchedulable: true,
           cbtfDurationMinutes: duration,
           availableFrom: new Date('2026-10-01T00:00:00Z'),
-          scheduleWindowStart: new Date('2026-10-01T00:00:00Z'),
-          acceptUntil: new Date('2026-10-01T23:59:00Z'),
-          scheduleWindowEnd: new Date('2026-10-01T23:59:00Z')
+          acceptUntil: new Date('2026-10-01T23:59:00Z')
         } as any)
         vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
         vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
         vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
-          { id: 'small', name: 'Small Center', timezone: 'UTC', totalSeats: 1 },
-          { id: 'large', name: 'Large Center', timezone: 'UTC', totalSeats: 24 }
+          configuredFacility({ id: 'small', timezone: 'UTC', totalSeats: 1 }, '08:02', '12:15'),
+          configuredFacility({ id: 'large', timezone: 'UTC', totalSeats: 57 }, '09:00', '14:00')
         ] as any)
-        vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-        vi.mocked(prisma.cbtfOperatingHours.findUnique).mockImplementation(async ({ where }: any) => ({
-          openTime: '08:00',
-          closeTime: where.facilityId_dayOfWeek.facilityId === 'small' ? '10:00' : '11:00'
-        }) as any)
-        // The same occupancy fills the small center, but leaves seats in the large center.
-        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([{
-          startTime: new Date('2026-10-01T08:00:00Z'),
-          endTime: new Date('2026-10-01T08:30:00Z'), seatNumber: 1
-        }] as any)
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
         const response = await availabilityGet(mockEvent(undefined, { assignmentId }))
-        expect(response.data.blocks.map(b => b.facilityId)).toEqual(['small', 'large'])
-        expect(new Set(response.data.blocks.map(b => b.id)).size).toBe(2)
-        const slots = response.data.hourlySlots
-        for (const [id, name, closing] of [
-          ['small', 'Small Center', '10:00'], ['large', 'Large Center', '11:00']
-        ]) {
-          const choices = slots.filter(slot => slot.facilityId === id)
-          expect(choices.length).toBeGreaterThan(0)
-          for (const slot of choices) {
-            expect(slot.facilityName).toBe(name)
-            expect(slot.formattedTime).toBeTruthy()
-            expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
-            expect(new Date(slot.endTime).getTime() - new Date(slot.startTime).getTime()).toBe(duration * 60000)
-            expect(new Date(slot.endTime).getTime()).toBeLessThanOrEqual(new Date(`2026-10-01T${closing}:00Z`).getTime())
-          }
-          expect(choices.at(-1)!.endTime).toBe(`2026-10-01T${closing}:00.000Z`)
-        }
-        expect(slots.filter(s => s.facilityId === 'small').every(s => s.startTime >= '2026-10-01T08:30:00.000Z')).toBe(true)
-        expect(slots.some(s => s.facilityId === 'large' && s.startTime < '2026-10-01T09:00:00.000Z')).toBe(true)
-        const blockId = response.data.blocks.find(b => b.facilityId === 'large')!.id
+        expect(response.data.blocks[0]!.id).toBe('2026-10-01-morning:UTC')
+        const blockId = response.data.blocks[0]!.id
         const selected = await availabilityGet(mockEvent(undefined, { assignmentId, blockId }))
-        expect(selected.data.hourlySlots.every(s => s.facilityId === 'large')).toBe(true)
+        const slots = selected.data.hourlySlots
+        expect(slots[0]!.startTime).toBe('2026-10-01T08:05:00.000Z')
+        expect(slots.at(-1)!.endTime).toBe('2026-10-01T14:00:00.000Z')
+        expect(new Set(slots.map(slot => slot.startTime)).size).toBe(slots.length)
+        for (const slot of slots) {
+          expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
+          expect(+new Date(slot.endTime) - +new Date(slot.startTime)).toBe(duration * 60_000)
+        }
         expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
       } finally {
         vi.useRealTimers()
-        vi.restoreAllMocks()
       }
     })
 
@@ -207,20 +201,15 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
 
-      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([{
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main Testing Center',
         totalSeats: 48,
         seatAllocationOrder: [1, 2, 3, 4],
         operatingHours: [{ dayOfWeek: 1, openTime: '08:00', closeTime: '17:00' }],
         scheduleExceptions: []
-      }] as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
       const response = await availabilityGet(event)
       expect(response.statusCode).toBe(200)
@@ -407,32 +396,31 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValueOnce(null) // no existing for student
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         totalSeats: 48, // max arrivals = 4
         seatAllocationOrder: [1, 2, 3, 4]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      // Throttle limit: count returns 4 concurrent arrivals
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValueOnce(4)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(
+        Array.from({ length: 4 }, (_, index) => ({
+          facilityId: 'fac-1', seatNumber: index + 1,
+          startTime: new Date(startTime), endTime: new Date('2026-10-05T14:15Z')
+        })) as any
+      )
 
       await expect(reservationsPost(event)).rejects.toThrowError(
         expect.objectContaining({
           statusCode: 409,
-          statusMessage: expect.stringContaining('Arrival capacity reached')
+          statusMessage: expect.stringContaining('No eligible workstation')
         })
       )
 
       expect(notifyCbtfScheduleFailure).toHaveBeenCalledWith(
         expect.objectContaining({
           errorType: expect.stringContaining('409'),
-          errorMessage: expect.stringContaining('Arrival capacity reached'),
+          errorMessage: expect.stringContaining('No eligible workstation'),
           errorLocation: expect.stringContaining('reservations.post.ts'),
           isReschedule: false
         })
@@ -466,20 +454,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main CBTF',
         totalSeats: 48,
         seatAllocationOrder: [1, 15, 29, 2]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValueOnce(1) // 1 arrival < 4 max
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([]) // no active overlapping
 
       vi.mocked(prisma.cbtfReservation.create).mockResolvedValue({
@@ -487,7 +469,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         facilityId: 'fac-1',
         assignmentId: 'clh1234567890123456789012',
         userId: 'usr-1',
-        seatNumber: 2,
+        seatNumber: 1,
         startTime: new Date(startTime),
         endTime: new Date('2026-10-05T14:15:00.000Z'),
         status: 'SCHEDULED',
@@ -502,11 +484,11 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       const response = await reservationsPost(event)
       expect(response.statusCode).toBe(201)
       expect(response.data.id).toBe('res-new')
-      expect(response.data.seatNumber).toBe(2)
+      expect(response.data.seatNumber).toBe(1)
       expect(response.data.status).toBe('SCHEDULED')
       expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(
         expect.objectContaining({
-          data: expect.objectContaining({ seatNumber: 2 })
+          data: expect.objectContaining({ seatNumber: 1 })
         })
       )
       expect(notifyCbtfScheduleSuccess).not.toHaveBeenCalled()
@@ -597,20 +579,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         acceptUntil: new Date('2026-10-10T00:00:00.000Z')
       } as any)
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main CBTF',
         totalSeats: 48,
         seatAllocationOrder: [1, 15, 29, 2]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValueOnce(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([])
       vi.mocked(prisma.cbtfReservation.create).mockResolvedValueOnce({
         id: 'res-retake',
@@ -665,20 +641,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
           status: 'CANCELLED'
         } as any) // reusableReservation
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main CBTF',
         totalSeats: 48,
         seatAllocationOrder: [1, 15, 29, 2]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValueOnce(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([])
       vi.mocked(prisma.cbtfReservation.update).mockResolvedValueOnce({
         id: 'res-cancelled',
@@ -731,20 +701,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         }
       } as any)
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main CBTF',
         totalSeats: 48,
         seatAllocationOrder: [1, 2, 3]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
 
@@ -795,20 +759,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         }
       } as any)
 
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1',
         name: 'Main CBTF',
         totalSeats: 48,
         seatAllocationOrder: [1, 2, 3]
-      } as any)
+      }))
 
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00',
-        closeTime: '17:00'
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
 
@@ -1002,18 +960,13 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
       vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+      mockFacilities(configuredFacility({
         id: 'fac-1', name: 'Testing Center', timezone: 'UTC', totalSeats: 48,
         seatAllocationOrder: Array.from({ length: 48 }, (_, i) => i + 1)
-      } as any)
-      vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.cbtfOperatingHours.findUnique).mockResolvedValue({
-        openTime: '08:00', closeTime: '17:00'
-      } as any)
+      }))
     })
 
     afterEach(() => vi.useRealTimers())
@@ -1038,23 +991,17 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       } as any
     }
 
-    describe('Step 2 selected facility', () => {
+    describe('Automatic facility placement', () => {
       const facilities = [
-        { id: 'fac-a', name: 'Center A', timezone: 'UTC', totalSeats: 2, seatAllocationOrder: [2, 1] },
-        { id: 'fac-b', name: 'Center B', timezone: 'UTC', totalSeats: 1, seatAllocationOrder: [1] }
+        configuredFacility({ id: 'fac-a', name: 'Center A', timezone: 'UTC', totalSeats: 48, seatAllocationOrder: [2, 1] }),
+        configuredFacility({ id: 'fac-b', name: 'Center B', timezone: 'UTC', totalSeats: 57 }, '08:00', '12:00')
       ]
 
       beforeEach(() => {
         vi.mocked(notifyCbtfScheduleFailure).mockResolvedValue(true)
         vi.spyOn(cbtfCanvas, 'syncCbtfReservationCanvasOverride').mockResolvedValue({} as any)
         vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment(90) as any)
-        vi.mocked(prisma.cbtfFacility.findUnique).mockImplementation(async ({ where }: any) =>
-          (facilities.find(f => f.id === where.id) ?? null) as any
-        )
-        vi.mocked(prisma.cbtfOperatingHours.findUnique).mockImplementation(async ({ where }: any) => ({
-          openTime: '08:00',
-          closeTime: where.facilityId_dayOfWeek.facilityId === 'fac-a' ? '17:00' : '12:00'
-        }) as any)
+        mockFacilities(...facilities)
         vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }: any) => reservation(data))
         vi.mocked(prisma.cbtfReservation.update).mockImplementation(async ({ data }: any) => reservation(data))
         vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
@@ -1065,64 +1012,53 @@ describe('API: CBTF Student Reservation Endpoints', () => {
 
       afterEach(() => vi.mocked(cbtfCanvas.syncCbtfReservationCanvasOverride).mockRestore())
 
-      function request(facilityId: unknown, time = startTime) {
+      function request(time = startTime, facilityId?: string) {
         return mockEvent({ id: 'usr-1', globalRole: 'USER' }, {},
           { assignmentId, facilityId, startTime: time }, { id: 'res-duration' })
       }
 
-      it.each(facilities)('books and persists selected $name with custom duration', async (facility) => {
-        const response = await reservationsPost(request(facility.id))
-        expect(response.data.facilityId).toBe(facility.id)
-        expect(response.data.endTime).toBe('2030-01-07T11:30:00.000Z')
-        expect(prisma.cbtfFacility.findFirst).not.toHaveBeenCalled()
-        expect(prisma.cbtfOperatingHours.findUnique).toHaveBeenCalledWith(expect.objectContaining({
-          where: { facilityId_dayOfWeek: { facilityId: facility.id, dayOfWeek: 1 } }
-        }))
-        expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(expect.objectContaining({
-          data: expect.objectContaining({ facilityId: facility.id, seatNumber: facility.seatAllocationOrder[0] })
-        }))
+      it('uses stable facility and seat ordering for ties, regardless of legacy facility input', async () => {
+        const response = await reservationsPost(request(startTime, 'fac-b'))
+        expect(response.data).toMatchObject({ facilityId: 'fac-a', seatNumber: 2, endTime: '2030-01-07T11:30:00.000Z' })
       })
 
-      it('reschedules from A to B and persists the target facility and custom duration', async () => {
-        const response = await reservationPatch(request('fac-b'))
-        expect(response.data.facilityId).toBe('fac-b')
-        expect(response.data.endTime).toBe('2030-01-07T11:30:00.000Z')
-        expect(prisma.cbtfFacility.findFirst).not.toHaveBeenCalled()
-        expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
-          data: expect.objectContaining({ facilityId: 'fac-b', seatNumber: 1 })
+      it('reschedules to the better facility and excludes the current reservation', async () => {
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+          { facilityId: 'fac-a', seatNumber: 2, startTime: new Date(startTime), endTime: new Date('2030-01-07T11:30Z') }
+        ] as any)
+        const response = await reservationPatch(request())
+        expect(response.data).toMatchObject({ facilityId: 'fac-b', seatNumber: 1 })
+        expect(prisma.cbtfReservation.findMany).toHaveBeenCalledWith(expect.objectContaining({
+          where: expect.objectContaining({ id: { not: 'res-duration' } })
         }))
       })
 
       it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
-        '%s enforces target facility rules', async (_method, handler) => {
-          await expect(handler(request('unknown'))).rejects.toMatchObject({ statusCode: 400 })
-          for (const invalid of [undefined, '', 123]) {
-            await expect(handler(request(invalid))).rejects.toMatchObject({ statusCode: 400 })
-          }
-          // A stays open later; B cannot fit the full 90-minute exam at 11 AM.
-          await expect(handler(request('fac-b', '2030-01-07T11:00:00.000Z'))).rejects.toMatchObject({
-            statusCode: 400, statusMessage: expect.stringContaining('closing time')
-          })
-          await expect(handler(request('fac-a', '2030-01-07T11:00:00.000Z'))).resolves.toBeDefined()
-          vi.mocked(prisma.cbtfReservation.findMany).mockImplementation(async ({ where }: any) =>
-            where.facilityId === 'fac-b' ? [{ seatNumber: 1 }] as any : []
-          )
-          await expect(handler(request('fac-b'))).rejects.toMatchObject({ statusCode: 409,
-            statusMessage: expect.stringContaining('completely full') })
-          await expect(handler(request('fac-a'))).resolves.toBeDefined()
-          vi.mocked(prisma.cbtfReservation.count).mockImplementation(async ({ where }: any) =>
-            where.facilityId === 'fac-b' ? 1 : 0
-          )
-          await expect(handler(request('fac-b'))).rejects.toMatchObject({ statusCode: 409,
-            statusMessage: expect.stringContaining('Arrival capacity') })
-          vi.mocked(prisma.cbtfScheduleException.findFirst).mockResolvedValue({ isClosed: true, reason: 'Closed for maintenance' } as any)
-          await expect(handler(request('fac-a'))).rejects.toMatchObject({ statusCode: 400 })
+        '%s excludes facilities whose hours cannot fit the entire exam', async (_method, handler) => {
+          await expect(handler(request('2030-01-07T11:00:00.000Z')))
+            .resolves.toMatchObject({ data: { facilityId: 'fac-a' } })
+          await expect(handler(request('2030-01-07T16:00:00.000Z')))
+            .rejects.toMatchObject({ statusCode: 409 })
         }
       )
+
+      it('rechecks availability after acquiring the facility locks before writing', async () => {
+        const facility = configuredFacility({ id: 'fac-a', name: 'Center A', timezone: 'UTC', totalSeats: 1 })
+        mockFacilities(facility)
+        vi.mocked(prisma.$queryRaw).mockImplementation(async () => {
+          vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+            { facilityId: facility.id, seatNumber: 1, startTime: new Date('2030-01-07T09:55Z'), endTime: new Date('2030-01-07T11:25Z') }
+          ] as any)
+          return [{ id: facility.id }]
+        })
+        await expect(reservationsPost(request())).rejects.toMatchObject({ statusCode: 409 })
+        expect(prisma.cbtfReservation.findMany).toHaveBeenCalledOnce()
+        expect(prisma.cbtfReservation.create).not.toHaveBeenCalled()
+      })
     })
 
     it.each([
-      [20, 20], [120, 120], [null, 60]
+      [90, 90], [240, 240], [null, 60]
     ])('POST persists the correct endTime for duration %s', async (duration, expectedMinutes) => {
       vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment(duration) as any)
       vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }: any) =>
@@ -1205,16 +1141,15 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       })
 
       it('assigns only seats certified for the student requirements', async () => {
-        vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+        mockFacilities({ ...configuredFacility({
           id: 'fac-1',
           name: 'Testing Center',
           timezone: 'UTC',
           totalSeats: 3,
           seatAllocationOrder: [1, 2, 3]
-        } as any)
-        vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([
+        }), seats: [
           { seatNumber: 2, properties: ['SSD'] }
-        ] as any)
+        ] })
         vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
           timeMultiplier: 1,
           requiredSeatProperties: ['SSD'],
@@ -1236,16 +1171,15 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       })
 
       it('keeps certified seats away from students without requirements', async () => {
-        vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+        mockFacilities({ ...configuredFacility({
           id: 'fac-1',
           name: 'Testing Center',
           timezone: 'UTC',
           totalSeats: 2,
           seatAllocationOrder: [1, 2]
-        } as any)
-        vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([
+        }), seats: [
           { seatNumber: 1, properties: ['SSD'] }
-        ] as any)
+        ] })
 
         const response = await reservationsPost(
           mockEvent({ id: 'usr-1', globalRole: 'USER' }, {}, {
@@ -1275,7 +1209,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
           )
         ).rejects.toMatchObject({
           statusCode: 409,
-          statusMessage: expect.stringContaining('meet your accommodations')
+          statusMessage: expect.stringContaining('No eligible workstation')
         })
       })
 

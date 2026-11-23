@@ -40,6 +40,13 @@ const globalStubs = {
     template:
       '<input type="checkbox" role="switch" :checked="modelValue" @change="$emit(\'update:modelValue\', $event.target.checked)" />'
   },
+  USelect: {
+    props: ['modelValue', 'items'],
+    template: `<select name="cbtfDurationMinutes" :value="modelValue"
+      @change="$emit('update:modelValue', Number($event.target.value))">
+      <option v-for="item in items" :key="item.value" :value="item.value">{{ item.label }}</option>
+    </select>`
+  },
   USelectMenu: {
     props: ['modelValue'],
     template: '<div class="select-menu" />'
@@ -147,7 +154,7 @@ describe('AssignmentEditPanel.vue - GTA Grading Interviews', () => {
 describe('AssignmentEditPanel.vue - CBTF duration', () => {
   beforeEach(() => vi.clearAllMocks())
 
-  function mountPanel() {
+  function mountPanel(duration = 90) {
     return mount(AssignmentEditPanel, {
       props: {
         open: true, courseId: 'c1', passTypes: [],
@@ -155,18 +162,23 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
           id: 'a1', title: 'Exam', canvasAssignmentId: null,
           dueDate: null, availableFrom: '2030-01-07T08:00:00Z', acceptUntil: '2030-01-07T12:00:00Z',
           scheduleWindowStart: '2030-01-01T08:00:00Z', scheduleWindowEnd: '2030-01-05T12:00:00Z',
-          isSchedulable: true, cbtfDurationMinutes: 37
+          isSchedulable: true, cbtfDurationMinutes: duration
         }
       },
       global: { stubs: globalStubs }
     })
   }
 
-  it('loads an existing custom duration and submits an edited numeric duration', async () => {
+  it('offers exactly the fixed durations and submits a numeric value', async () => {
     const wrapper = mountPanel()
     await flushPromises()
-    const input = wrapper.get<HTMLInputElement>('input[name="cbtfDurationMinutes"]')
-    expect(input.element.value).toBe('37')
+    expect(wrapper.find('input[name="cbtfDurationMinutes"]').exists()).toBe(false)
+    const input = wrapper.get<HTMLSelectElement>('select[name="cbtfDurationMinutes"]')
+    expect(input.element.value).toBe('90')
+    expect(Array.from(input.element.options, option => [option.value, option.text])).toEqual([
+      ['30', '30 minutes'], ['60', '1 hour'], ['90', '1.5 hours'], ['120', '2 hours'],
+      ['150', '2.5 hours'], ['180', '3 hours'], ['210', '3.5 hours'], ['240', '4 hours']
+    ])
     await input.setValue('120')
     await wrapper.get('form').trigger('submit')
     await flushPromises()
@@ -176,13 +188,13 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
     wrapper.unmount()
   })
 
-  it('resets a previous custom duration to 60 in create mode', async () => {
+  it('defaults to 60 in create mode', async () => {
     const wrapper = mountPanel()
     await flushPromises()
     await wrapper.setProps({ open: false })
     await wrapper.setProps({ assignment: null, open: true })
     await wrapper.findAll('input[role="switch"]')[0]!.setValue(true)
-    expect(wrapper.get<HTMLInputElement>('input[name="cbtfDurationMinutes"]').element.value).toBe('60')
+    expect(wrapper.get<HTMLSelectElement>('select[name="cbtfDurationMinutes"]').element.value).toBe('60')
     for (const [name, value] of Object.entries({ availableFrom: '2030-01-07T08:00', acceptUntil: '2030-01-07T12:00',
       scheduleWindowStart: '2030-01-01T08:00', scheduleWindowEnd: '2030-01-05T12:00' })) {
       await wrapper.get(`input[name="${name}"]`).setValue(value)
@@ -198,8 +210,7 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
   it.each([
     ['acceptUntil', '2030-01-07T07:00', 'Available From must be before Accept Until'],
     ['scheduleWindowEnd', '2029-01-01T00:00', 'Reservation Window Start must be before Reservation Window End'],
-    ['cbtfDurationMinutes', '300', 'must fit the full 300-minute exam'],
-    ['cbtfDurationMinutes', '0', 'positive whole number']
+    ['acceptUntil', '2030-01-07T09:00', 'must fit the full 90-minute exam']
   ])('shows clear validation for invalid %s', async (field, value, message) => {
     const wrapper = mountPanel()
     await wrapper.get(`input[name="${field}"]`).setValue(value)
@@ -208,6 +219,17 @@ describe('AssignmentEditPanel.vue - CBTF duration', () => {
     expect(mockFetch).not.toHaveBeenCalled()
     expect(mockNotifications.error).toHaveBeenCalledWith(expect.objectContaining({
       message: expect.stringContaining(message)
+    }))
+    wrapper.unmount()
+  })
+
+  it('requires a supported selection when editing a legacy custom duration', async () => {
+    const wrapper = mountPanel(37)
+    await wrapper.get('form').trigger('submit')
+    await flushPromises()
+    expect(mockFetch).not.toHaveBeenCalled()
+    expect(mockNotifications.error).toHaveBeenCalledWith(expect.objectContaining({
+      message: expect.stringContaining('Select a CBTF exam duration')
     }))
     wrapper.unmount()
   })

@@ -1,4 +1,4 @@
-import { defineEventHandler } from 'h3'
+import { defineEventHandler, readValidatedBody } from 'h3'
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { createAssignmentSchema } from '@@/shared/models/assignment'
@@ -23,7 +23,11 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
       courseId: body.courseId,
       dueDate: body.dueDate ? new Date(body.dueDate) : null,
       availableFrom: body.availableFrom ? new Date(body.availableFrom) : null,
-      acceptUntil: body.acceptUntil ? new Date(body.acceptUntil) : null
+      acceptUntil: body.acceptUntil ? new Date(body.acceptUntil) : null,
+      isSchedulable: body.isSchedulable ?? false,
+      cbtfDurationMinutes: body.cbtfDurationMinutes,
+      scheduleWindowStart: body.scheduleWindowStart ? new Date(body.scheduleWindowStart) : null,
+      scheduleWindowEnd: body.scheduleWindowEnd ? new Date(body.scheduleWindowEnd) : null
     }
   })
 

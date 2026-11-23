@@ -74,13 +74,13 @@
                 label="Reservation Window End"
                 type="datetime-local"
               />
-              <BaseFormInput
-                  v-model.number="state.cbtfDurationMinutes"
-                  name="cbtfDurationMinutes"
-                  label="Exam Duration (minutes)"
-                  type="number"
-                  min="1"
-               />
+              <UFormField name="cbtfDurationMinutes" label="Exam Duration">
+                <USelect
+                  v-model="state.cbtfDurationMinutes"
+                  :items="CBTF_DURATION_OPTIONS"
+                  class="w-full"
+                />
+              </UFormField>
             </div>
           </div>
 
@@ -174,7 +174,7 @@
 
 <script setup lang="ts">
 import { ref, reactive, computed, watch, useTemplateRef } from 'vue'
-import { getAssignmentSchedulingErrors } from '@@/shared/utils/assignment-scheduling'
+import { CBTF_DURATION_OPTIONS, getAssignmentSchedulingErrors, isAllowedCbtfDuration } from '@@/shared/utils/assignment-scheduling'
 const { success, error: showError } = useNotifications()
 
 interface AssignmentData {
@@ -250,7 +250,7 @@ const state = reactive({
   isSchedulable: false,
   scheduleWindowStart: '',
   scheduleWindowEnd: '',
-  cbtfDurationMinutes: 60,
+  cbtfDurationMinutes: 60 as number | undefined,
   hasInterviews: false,
   interviewWindowStart: '',
   interviewWindowEnd: ''
@@ -299,7 +299,9 @@ watch(
       state.isSchedulable = !!assignment.isSchedulable
       state.scheduleWindowStart = toLocalDatetime(assignment.scheduleWindowStart ?? null)
       state.scheduleWindowEnd = toLocalDatetime(assignment.scheduleWindowEnd ?? null)
-      state.cbtfDurationMinutes = assignment.cbtfDurationMinutes ?? 60
+      state.cbtfDurationMinutes = assignment.cbtfDurationMinutes == null
+        ? 60
+        : isAllowedCbtfDuration(assignment.cbtfDurationMinutes) ? assignment.cbtfDurationMinutes : undefined
       state.hasInterviews = !!assignment.hasInterviews
       state.interviewWindowStart = toLocalDatetime(assignment.interviewWindowStart ?? null)
       state.interviewWindowEnd = toLocalDatetime(assignment.interviewWindowEnd ?? null)

@@ -3,8 +3,8 @@ import { createAssignmentSchema, updateAssignmentSchema } from '@@/shared/models
 import { getAssignmentSchedulingErrors } from '@@/shared/utils/assignment-scheduling'
 
 const valid = {
-  courseId: 'course', isSchedulable: true, cbtfDurationMinutes: 75,
-  availableFrom: '2030-01-07T09:00:00Z', acceptUntil: '2030-01-07T10:15:00Z',
+  courseId: 'course', isSchedulable: true, cbtfDurationMinutes: 90,
+  availableFrom: '2030-01-07T09:00:00Z', acceptUntil: '2030-01-07T10:30:00Z',
   scheduleWindowStart: '2030-01-01T00:00:00Z', scheduleWindowEnd: '2030-01-05T00:00:00Z'
 }
 
@@ -18,8 +18,8 @@ describe('CBTF instructor window configuration', () => {
     { acceptUntil: valid.availableFrom },
     { scheduleWindowEnd: valid.scheduleWindowStart },
     { scheduleWindowStart: '2030-01-06T00:00:00Z' },
-    { cbtfDurationMinutes: 0 }, { cbtfDurationMinutes: -1 },
-    { acceptUntil: '2030-01-07T10:10:00Z' },
+    { cbtfDurationMinutes: null }, { cbtfDurationMinutes: undefined }, { cbtfDurationMinutes: 0 }, { cbtfDurationMinutes: -1 },
+    { acceptUntil: '2030-01-07T10:25:00Z' },
     { availableFrom: 'invalid' }, { availableFrom: null }, { scheduleWindowEnd: null }
   ])('rejects invalid complete configuration %j', change => {
     expect(createAssignmentSchema.safeParse({ ...valid, ...change }).success).toBe(false)
@@ -29,6 +29,6 @@ describe('CBTF instructor window configuration', () => {
 
   it('validates pairs in partial updates and keeps single-field updates possible', () => {
     expect(updateAssignmentSchema.safeParse({ availableFrom: valid.acceptUntil, acceptUntil: valid.availableFrom }).success).toBe(false)
-    expect(updateAssignmentSchema.safeParse({ cbtfDurationMinutes: 75 }).success).toBe(true)
+    expect(updateAssignmentSchema.safeParse({ cbtfDurationMinutes: 90 }).success).toBe(true)
   })
 })

@@ -2,20 +2,13 @@ import { defineEventHandler, getRouterParam, readBody, createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import { rescheduleReservationInputSchema } from '@@/shared/schemas/cbtf.schema'
 import {
-  getFacilityOperatingHoursForDate,
-  calculateMaxArrivalsPerSlot,
-  assignNextSeat,
-  getFacilitySeatAllocationOrder,
-  getFacilitySeatProperties,
-  getEligibleSeatNumbers,
   getStudentAccommodation,
   getEffectiveExamDurationMinutes,
-  hasAvailableCbtfSeat,
   getStudentSchedulingWindow,
   assertCbtfReservationWindowOpen,
   toCbtfReservationDto
 } from '@@/server/utils/cbtf'
-import { combineDateAndTime } from '@@/shared/utils/timezone'
+import { chooseCbtfPlacement, lockCbtfFacilities } from '@@/server/utils/cbtf-placement'
 import { syncCbtfReservationCanvasOverride } from '@@/server/utils/cbtf-canvas'
 import { notifyCbtfScheduleFailure } from '@@/server/services/alert.service'
 import type { ApiResponse } from '@@/shared/types/api'
@@ -59,7 +52,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         data: validation.error.flatten()
       })
     }
-    const { facilityId, startTime: newStartTimeStr } = validation.data
+    const { startTime: newStartTimeStr } = validation.data
     targetSlot = newStartTimeStr
 
     currentStep = 'Checking 5-Minute Boundary Alignment'
@@ -88,219 +81,127 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       })
     }
 
-    currentStep = 'Retrieving Existing Reservation'
-    const existing = await prisma.cbtfReservation.findUnique({
-      where: { id: reservationId },
-      include: {
-        assignment: {
-          include: {
-            course: { select: { label: true, title: true } }
+    const updatedReservation = await prisma.$transaction(async (tx) => {
+      currentStep = 'Locking Testing Facilities'
+      const facilityIds = await lockCbtfFacilities(tx)
+
+      currentStep = 'Retrieving Existing Reservation'
+      const existing = await tx.cbtfReservation.findUnique({
+        where: { id: reservationId },
+        include: {
+          assignment: {
+            include: {
+              course: { select: { label: true, title: true } }
+            }
           }
         }
-      }
-    })
-
-    if (!existing || existing.userId !== session.user.id) {
-      throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
-    }
-    currentStep = 'Checking Reservation Window'
-    assertCbtfReservationWindowOpen(existing.assignment)
-    currentStep = 'Applying SSD Accommodations'
-    const accommodation = await getStudentAccommodation(session.user.id)
-    const durationMinutes = getEffectiveExamDurationMinutes(
-      existing.assignment.cbtfDurationMinutes,
-      accommodation.timeMultiplier
-    )
-    const newEndTime = new Date(newStartTime.getTime() + durationMinutes * 60 * 1000)
-    targetAssignmentTitle = existing.assignment?.title || null
-    targetCourseLabel =
-      existing.assignment?.course?.label || existing.assignment?.course?.title || null
-
-    currentStep = 'Verifying Reservation Status'
-    if (
-      existing.status !== 'SCHEDULED' &&
-      existing.status !== 'MISSED' &&
-      existing.status !== 'CANCELLED'
-    ) {
-      throw createError({
-        statusCode: 400,
-        statusMessage: `Cannot reschedule reservation in ${existing.status} status`
       })
-    }
 
-    // Prevent duplicate: student cannot have another active reservation for the same assignment
-    currentStep = 'Checking For Duplicate Assignment Reservation'
-    const existingActiveForAssignment = await prisma.cbtfReservation.findFirst({
-      where: {
-        userId: session.user.id,
-        assignmentId: existing.assignment?.id || existing.assignmentId,
-        id: { not: existing.id },
-        status: { in: ['SCHEDULED', 'CHECKED_IN'] }
+      if (!existing || existing.userId !== session.user.id) {
+        throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
       }
-    })
-    if (existingActiveForAssignment) {
-      throw createError({
-        statusCode: 409,
-        statusMessage:
-          'You already have an active reservation for this assignment. Cancel it before rescheduling this one.'
-      })
-    }
-
-    // Check if student already completed this exam (requires retake pass to reschedule)
-    currentStep = 'Checking For Completed Exam'
-    const existingCompleted = await prisma.cbtfReservation.findFirst({
-      where: {
-        userId: session.user.id,
-        assignmentId: existing.assignment?.id || existing.assignmentId,
-        id: { not: existing.id },
-        status: { in: ['CHECKED_OUT', 'COMPLETED'] }
-      }
-    })
-    if (existingCompleted) {
-      const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment)
-      if (!studentWindow.isPassWindow) {
-        throw createError({
-          statusCode: 403,
-          statusMessage:
-            'You have already completed this exam. A retake pass is required to reschedule another attempt.'
-        })
-      }
-    }
-
-    // Check for time collision with student's other active reservations
-    currentStep = 'Checking Time Overlap With Other Reservations'
-    const conflictingSlot = await prisma.cbtfReservation.findFirst({
-      where: {
-        userId: session.user.id,
-        id: { not: existing.id },
-        status: { in: ['SCHEDULED', 'CHECKED_IN'] },
-        startTime: { lt: newEndTime },
-        endTime: { gt: newStartTime }
-      },
-      include: {
-        assignment: { select: { title: true } }
-      }
-    })
-    if (conflictingSlot) {
-      throw createError({
-        statusCode: 409,
-        statusMessage: `You already have an active test reservation for "${conflictingSlot.assignment?.title || 'another assignment'}" overlapping this time slot`
-      })
-    }
-
-    // Verify within student scheduling window
-    currentStep = 'Verifying Student Availability Window'
-    const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment)
-    if (newStartTime < studentWindow.start || newEndTime > studentWindow.end) {
-      throw createError({
-        statusCode: 400,
-        statusMessage: 'Selected time slot falls outside your test availability window'
-      })
-    }
-
-    currentStep = 'Retrieving Testing Facility'
-    const facility = await prisma.cbtfFacility.findUnique({ where: { id: facilityId } })
-    if (!facility) {
-      throw createError({ statusCode: 400, statusMessage: 'Invalid testing facility' })
-    }
-
-    currentStep = 'Rescheduling Reservation & Reallocating Seat'
-    const updatedReservation = await prisma.$transaction(async (tx) => {
-      // Serialize capacity checks and writes at this facility, including concurrent arrivals.
-      await tx.$queryRaw`SELECT id FROM "CbtfFacility" WHERE id = ${facility.id} FOR UPDATE`
-      const timeZone = facility.timezone || 'America/New_York'
-      const hours = await getFacilityOperatingHoursForDate(
-        facility.id,
-        newStartTime,
-        tx as any,
-        timeZone
+      currentStep = 'Checking Reservation Window'
+      assertCbtfReservationWindowOpen(existing.assignment)
+      currentStep = 'Applying SSD Accommodations'
+      const accommodation = await getStudentAccommodation(session.user.id, tx)
+      const durationMinutes = getEffectiveExamDurationMinutes(
+        existing.assignment.cbtfDurationMinutes,
+        accommodation.timeMultiplier
       )
-      if (!hours.isOpen || !hours.openTime || !hours.closeTime) {
+      const newEndTime = new Date(newStartTime.getTime() + durationMinutes * 60 * 1000)
+      targetAssignmentTitle = existing.assignment?.title || null
+      targetCourseLabel =
+        existing.assignment?.course?.label || existing.assignment?.course?.title || null
+
+      currentStep = 'Verifying Reservation Status'
+      if (
+        existing.status !== 'SCHEDULED' &&
+        existing.status !== 'MISSED' &&
+        existing.status !== 'CANCELLED'
+      ) {
         throw createError({
           statusCode: 400,
-          statusMessage: hours.reason || 'Testing center is closed on this date'
+          statusMessage: `Cannot reschedule reservation in ${existing.status} status`
         })
       }
 
-      const openDateTime = combineDateAndTime(newStartTime, hours.openTime, timeZone)
-      const closeDateTime = combineDateAndTime(newStartTime, hours.closeTime, timeZone)
-
-      if (newStartTime < openDateTime || newEndTime > closeDateTime) {
-        throw createError({
-          statusCode: 400,
-          statusMessage: `Reservation must finish before closing time (${hours.closeTime})`
-        })
-      }
-
-      // Check throttle limit at new slot (excluding current reservation)
-      const maxArrivals = calculateMaxArrivalsPerSlot(facility.totalSeats)
-      const concurrentArrivals = await tx.cbtfReservation.count({
+      // Prevent duplicate: student cannot have another active reservation for the same assignment
+      currentStep = 'Checking For Duplicate Assignment Reservation'
+      const existingActiveForAssignment = await tx.cbtfReservation.findFirst({
         where: {
-          facilityId: facility.id,
+          userId: session.user.id,
+          assignmentId: existing.assignment?.id || existing.assignmentId,
           id: { not: existing.id },
-          startTime: newStartTime,
           status: { in: ['SCHEDULED', 'CHECKED_IN'] }
         }
       })
-
-      if (concurrentArrivals >= maxArrivals) {
+      if (existingActiveForAssignment) {
         throw createError({
           statusCode: 409,
-          statusMessage: 'Arrival capacity reached for this time slot'
+          statusMessage:
+            'You already have an active reservation for this assignment. Cancel it before rescheduling this one.'
         })
       }
 
-      // Check capacity at new slot (excluding current reservation)
-      const activeReservations = await tx.cbtfReservation.findMany({
+      // Check if student already completed this exam (requires retake pass to reschedule)
+      currentStep = 'Checking For Completed Exam'
+      const existingCompleted = await tx.cbtfReservation.findFirst({
         where: {
-          facilityId: facility.id,
+          userId: session.user.id,
+          assignmentId: existing.assignment?.id || existing.assignmentId,
+          id: { not: existing.id },
+          status: { in: ['CHECKED_OUT', 'COMPLETED'] }
+        }
+      })
+      if (existingCompleted) {
+        const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment, tx)
+        if (!studentWindow.isPassWindow) {
+          throw createError({
+            statusCode: 403,
+            statusMessage:
+              'You have already completed this exam. A retake pass is required to reschedule another attempt.'
+          })
+        }
+      }
+
+      // Check for time collision with student's other active reservations
+      currentStep = 'Checking Time Overlap With Other Reservations'
+      const conflictingSlot = await tx.cbtfReservation.findFirst({
+        where: {
+          userId: session.user.id,
           id: { not: existing.id },
           status: { in: ['SCHEDULED', 'CHECKED_IN'] },
           startTime: { lt: newEndTime },
           endTime: { gt: newStartTime }
         },
-        select: { seatNumber: true }
+        include: {
+          assignment: { select: { title: true } }
+        }
       })
-
-      const seatOrder = getFacilitySeatAllocationOrder(facility)
-      const seatProperties = await getFacilitySeatProperties(facility.id, tx as any)
-      const eligibleSeats = getEligibleSeatNumbers(
-        seatOrder,
-        seatProperties,
-        accommodation.requiredSeatProperties
-      )
-      if (eligibleSeats.length === 0) {
+      if (conflictingSlot) {
         throw createError({
           statusCode: 409,
-          statusMessage:
-            'No seats are configured that meet your accommodations. Please contact the testing center.'
+          statusMessage: `You already have an active test reservation for "${conflictingSlot.assignment?.title || 'another assignment'}" overlapping this time slot`
         })
       }
 
-      const eligibleSeatSet = new Set(eligibleSeats)
-      const occupiedEligibleSeats = new Set(
-        activeReservations
-          .map((reservation) => reservation.seatNumber)
-          .filter((seatNumber) => eligibleSeatSet.has(seatNumber))
-      ).size
-      if (occupiedEligibleSeats >= eligibleSeats.length || !hasAvailableCbtfSeat(eligibleSeats, activeReservations)) {
+      // Verify within student scheduling window
+      currentStep = 'Verifying Student Availability Window'
+      const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment, tx)
+      if (newStartTime < studentWindow.start || newEndTime > studentWindow.end) {
         throw createError({
-          statusCode: 409,
-          statusMessage: 'Testing facility is completely full during this time slot'
+          statusCode: 400,
+          statusMessage: 'Selected time slot falls outside your test availability window'
         })
       }
 
-      const assignedSeat = assignNextSeat(
-        seatOrder,
-        newStartTime,
-        newEndTime,
-        activeReservations,
-        undefined,
-        eligibleSeats
+      currentStep = 'Selecting Testing Facility and Workstation'
+      const { facility, seatNumber: assignedSeat } = await chooseCbtfPlacement(
+        tx, facilityIds, newStartTime, newEndTime, accommodation.requiredSeatProperties, existing.id
       )
 
       const updated = await tx.cbtfReservation.update({
-        where: { id: existing.id },
+        where: { id: existing.id, status: existing.status },
         data: {
           facilityId: facility.id,
           startTime: newStartTime,
@@ -309,13 +210,14 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
           status: 'SCHEDULED'
         },
         include: {
+          facility: { select: { name: true } },
           assignment: { select: { title: true } },
           user: { select: { firstName: true, lastName: true, studentId: true, avatarUrl: true } }
         }
       })
 
       return updated
-    })
+    }, { isolationLevel: 'ReadCommitted' })
 
     currentStep = 'Syncing Canvas Override'
     // Synchronize individual Canvas assignment override (Option A: non-blocking)
