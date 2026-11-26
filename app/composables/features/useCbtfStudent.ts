@@ -1,13 +1,19 @@
 import type { ApiResponse } from '@@/shared/types/api'
 import type {
   CbtfReservationDto,
+  CbtfAvailabilityStatus,
+  CbtfFacilityAvailabilityDiagnostic,
+  CbtfReservationWindow,
   CbtfRecommendedDay,
   CbtfStudentBlock,
   CbtfStudentStart
 } from '@@/shared/models/cbtf'
 
-export interface CbtfAvailabilityData {
+export interface CbtfAvailabilityData extends CbtfReservationWindow {
+  availabilityStatus: CbtfAvailabilityStatus
+  facilityDiagnostics: CbtfFacilityAvailabilityDiagnostic[]
   assignmentTitle: string | null
+  configuredTotalSeats: number | null
   studentWindow: {
     start: string
     end: string

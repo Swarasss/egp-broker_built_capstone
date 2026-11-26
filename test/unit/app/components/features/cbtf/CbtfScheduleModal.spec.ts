@@ -61,50 +61,81 @@ describe('CbtfScheduleModal', () => {
     })
   })
 
-  it.each([false, true])('carries the selected center through review and confirmation (rescheduling: %s)', async (rescheduling) => {
-    const blocks = ['North', 'South'].map(name => ({
-      id: `${name}:2026-10-01-morning`, facilityId: name, facilityName: `${name} Center`,
-      label: 'Thursday Morning', dateLabel: 'Oct 1', timeRangeLabel: '8 AM – 12 PM',
-      totalSeats: 48, openSlotsCount: 54, totalSlotsCount: 54, utilizationPercentage: 0
-    }))
-    mockFetchAvailability.mockResolvedValue({ blocks, recommendedDays: [], hourlySlots: [{
-      facilityId: 'South', facilityName: 'South Center', startTime: '2026-10-01T09:00:00Z',
-      endTime: '2026-10-01T10:00:00Z', formattedTime: '9:00 AM', hour: 9
-    }] })
+  it.each([
+    ['RESERVATION_NOT_OPEN', 'The reservation window for this exam has not opened yet.'],
+    ['RESERVATION_CLOSED', 'The reservation window for this exam is currently closed.'],
+    ['NO_CONFIGURED_FACILITY_HOURS', 'No testing center is configured with operating hours that overlap this exam window.'],
+    ['NO_AVAILABLE_SEATS', 'No testing-center availability is currently available within your exam window.']
+  ])('explains %s and disables Next', async (availabilityStatus, message) => {
+    mockFetchAvailability.mockResolvedValue({ availabilityStatus, blocks: [], hourlySlots: [] })
     const wrapper = mount(CbtfScheduleModal, {
-      props: { open: false, assignment: mockAssignment, existingReservation: rescheduling ? mockExistingReservation : null }, global: { stubs }
+      props: { open: false, assignment: mockAssignment }, global: { stubs }
     })
     await wrapper.setProps({ open: true })
-    if (rescheduling) {
-      await wrapper.findAll('button').find(b => b.text().includes('Reschedule Exam'))!.trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[role="status"]').text()).toBe(message)
+    expect(wrapper.findAll('button').find(button => button.text() === 'Next')?.attributes()).toHaveProperty('disabled')
+  })
+
+  it.each([
+    [{ data: { data: { availabilityStatus: 'INVALID_ASSIGNMENT_WINDOW' } } },
+      'This exam is not fully configured for CBTF scheduling. Please contact your instructor.'],
+    [new Error('Internal stack trace'), 'Testing-center availability could not be loaded. Please try again.']
+  ])('shows a safe request error instead of empty availability', async (error, message) => {
+    mockFetchAvailability.mockRejectedValue(error)
+    const wrapper = mount(CbtfScheduleModal, {
+      props: { open: false, assignment: mockAssignment }, global: { stubs }
+    })
+    await wrapper.setProps({ open: true })
+    await flushPromises()
+    expect(wrapper.get('[role="status"]').text()).toBe(message)
+    expect(wrapper.text()).not.toContain('No testing-center availability')
+    expect(wrapper.text()).not.toContain('Internal stack trace')
+  })
+
+  it.each([false, true])('shows a compact timezone and books only the selected time (rescheduling: %s)', async (rescheduling) => {
+    const block = {
+      id: '2026-10-01-morning:America/New_York',
+      label: 'Thursday Morning',
+      dateLabel: 'Oct 1',
+      timezone: 'America/New_York'
     }
+    const startTime = '2026-10-01T13:00:00Z'
+    mockFetchAvailability.mockResolvedValue({
+      blocks: [block],
+      recommendedDays: [],
+      hourlySlots: [{ startTime, endTime: '2026-10-01T14:00:00Z', formattedTime: '9:00 AM' }]
+    })
+    const wrapper = mount(CbtfScheduleModal, {
+      props: { open: false, assignment: mockAssignment, existingReservation: rescheduling ? mockExistingReservation : null },
+      global: { stubs }
+    })
+    const button = (text: string) => wrapper.findAll('button').find(b => b.text().includes(text))!
+
+    await wrapper.setProps({ open: true })
+    if (rescheduling) await button('Reschedule Exam').trigger('click')
     await flushPromises()
-    expect(wrapper.text()).toContain('48-seat testing center')
-    expect(wrapper.text()).toContain('Available arrival times')
-    expect(wrapper.text()).not.toContain('slots open')
-    expect(wrapper.text()).not.toContain('booked')
-    expect(wrapper.text()).not.toContain('% full')
-    expect(wrapper.text()).not.toContain('54')
-    expect(wrapper.text()).toContain('North Center')
-    expect(wrapper.text()).toContain('South Center')
-    await wrapper.findAll('button').find(b => b.text().includes('South Center'))!.trigger('click')
+    expect(button('Thursday Morning').text()).toContain('Eastern (ET)')
+    expect(wrapper.text()).not.toContain('America/New_York')
+    await button(rescheduling ? 'Thursday Morning' : 'Next').trigger('click')
     await flushPromises()
-    expect(mockFetchAvailability).toHaveBeenLastCalledWith(mockAssignment.id, blocks[1]!.id, undefined, rescheduling ? mockExistingReservation.id : undefined)
-    const timeButton = wrapper.findAll('button').find(b => b.text().includes('9:00 AM'))!
-    expect(timeButton.text()).toContain('South Center')
-    await timeButton.trigger('click')
-    expect(wrapper.text()).toContain('Testing Center')
-    expect(wrapper.text()).toContain('South Center')
+    expect(mockFetchAvailability).toHaveBeenLastCalledWith(
+      mockAssignment.id, block.id, undefined, rescheduling ? mockExistingReservation.id : undefined
+    )
+    expect(wrapper.text()).toContain('Times shown in Eastern (ET)')
+    expect(button('9:00 AM').text()).toBe('9:00 AM')
+    await button('9:00 AM').trigger('click')
+    expect(wrapper.text()).toContain('9:00 AM · Eastern (ET)')
     expect(mockCreateReservation).not.toHaveBeenCalled()
     expect(mockRescheduleReservation).not.toHaveBeenCalled()
-    const result = { ...mockExistingReservation, facilityId: 'South', seatNumber: 7 }
+
+    const result = { ...mockExistingReservation, facilityId: 'south', facilityName: 'South Center', seatNumber: 7 }
     mockCreateReservation.mockResolvedValue(result)
     mockRescheduleReservation.mockResolvedValue(result)
-    await wrapper.findAll('button').find(b => b.text().includes(rescheduling ? 'Confirm Reschedule' : 'Confirm Reservation'))!.trigger('click')
+    await button(rescheduling ? 'Confirm Reschedule' : 'Confirm Reservation').trigger('click')
     await flushPromises()
     expect(rescheduling ? mockRescheduleReservation : mockCreateReservation).toHaveBeenCalledWith(
-      rescheduling ? mockExistingReservation.id : mockAssignment.id,
-      '2026-10-01T09:00:00Z', 'South'
+      rescheduling ? mockExistingReservation.id : mockAssignment.id, startTime
     )
     expect(wrapper.text()).toContain('Exam Confirmed!')
     expect(wrapper.text()).toContain('South Center')

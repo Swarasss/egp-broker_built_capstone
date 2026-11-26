@@ -76,6 +76,23 @@ describe('CBTF physical seat capacity and effective intervals', () => {
     expect(assignNextSeat(getFacilitySeatAllocationOrder(center), candidate.startTime, candidate.endTime, reservations)).toBe(2)
   })
 
+  it('counts only eligible seats and their full-interval occupancy as usable capacity', () => {
+    const slots = generateAvailableSlotsForDate(facility(6), at('00:00'), {
+      isOpen: true, openTime: '08:00', closeTime: '19:00', reason: null
+    }, [
+      { seatNumber: 1, startTime: at('07:45'), endTime: at('08:30') },
+      { seatNumber: 5, startTime: at('08:30'), endTime: at('09:00') }
+    ], 'UTC', 60, examWindow, [1, 2, 3])
+
+    expect(slots[0]).toMatchObject({
+      totalSeats: 6,
+      occupiedSeatsCount: 2,
+      eligibleSeatCount: 3,
+      occupiedEligibleSeatCount: 1,
+      freeEligibleSeatCount: 2
+    })
+  })
+
   it('requires one seat free for the entire interval, even when seats are free at different times', () => {
     const reservations = [
       { seatNumber: 1, startTime: at('08:00'), endTime: at('08:30') },

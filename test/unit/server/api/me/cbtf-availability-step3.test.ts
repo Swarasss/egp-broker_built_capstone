@@ -116,7 +116,8 @@ describe('Step 3 student CBTF availability', () => {
   it('excludes the current reservation only for rescheduling, across facilities', async () => {
     reservations = [current]
     const normal = await request()
-    expect(normal.data.recommendedDays.map(b => b.facilityId)).toEqual(['b'])
+    expect(normal.data.availabilityStatus).toBe('STUDENT_CONFLICT')
+    expect(normal.data.hourlySlots).toEqual([])
     const rescheduling = await request('current')
     expect(rescheduling.data.recommendedDays.map(b => b.facilityId)).toEqual(['a', 'b'])
     expect(rescheduling.data.activeReservation?.id).toBe('current')
@@ -138,6 +139,89 @@ describe('Step 3 student CBTF availability', () => {
     reservations = [{ ...current, ...change }]
     await expect(request('current')).rejects.toMatchObject({ statusCode: 404 })
     expect(prisma.cbtfReservation.findMany).not.toHaveBeenCalled()
+  })
+
+  it('blocks only overlapping starts across facilities, including a checked-in reservation for another assignment', async () => {
+    reservations = [{
+      ...current, assignmentId: 'other-exam', status: 'CHECKED_IN',
+      startTime: new Date('2030-01-07T08:30:00Z'), endTime: new Date('2030-01-07T09:30:00Z')
+    }, {
+      ...current, id: 'cancelled', status: 'CANCELLED'
+    }]
+    const { data } = await request()
+    expect(data.availabilityStatus).toBe('AVAILABLE')
+    expect(data.hourlySlots[0]?.startTime).toBe('2030-01-07T09:30:00.000Z')
+    expect(data.hourlySlots.at(-1)?.startTime).toBe('2030-01-07T10:00:00.000Z')
+  })
+
+  it('permits an exam to end exactly when another reservation starts', async () => {
+    reservations = [{
+      ...current, assignmentId: 'other-exam',
+      startTime: new Date('2030-01-07T10:10:00Z'), endTime: new Date('2030-01-07T11:30:00Z')
+    }]
+    const { data } = await request()
+    expect(data.hourlySlots.map(slot => slot.startTime)).toEqual([windowStart.toISOString()])
+  })
+
+  it.each([1, 2, 5])('evaluates every configured facility when there are %i facilities', async count => {
+    const centers = Array.from({ length: count }, (_, index) => ({ ...facilities[0], id: `center-${index}` }))
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(centers as any)
+    const { data } = await request()
+    expect(prisma.cbtfFacility.findMany).toHaveBeenCalledWith({
+      orderBy: { id: 'asc' }, include: { operatingHours: true, scheduleExceptions: true, seats: true }
+    })
+    expect(data.facilityDiagnostics.map(row => row.facilityId)).toEqual(centers.map(row => row.id))
+    expect(data.facilityDiagnostics.every(row => row.status === 'AVAILABLE')).toBe(true)
+    expect(data.blocks).toHaveLength(1)
+    expect(data.hourlySlots).toHaveLength(11)
+  })
+
+  it('reports a full facility without consuming capacity at other facilities', async () => {
+    reservations = [{ ...current, userId: 'other-student' }]
+    const { data } = await request()
+    expect(data.availabilityStatus).toBe('AVAILABLE')
+    expect(data.facilityDiagnostics.map(row => row.status)).toEqual(['NO_AVAILABLE_SEATS', 'AVAILABLE'])
+    expect(data.recommendedDays.map(day => day.facilityId)).toEqual(['b'])
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([facilities[0]] as any)
+    const full = (await request()).data
+    expect(full).toMatchObject({ availabilityStatus: 'NO_AVAILABLE_SEATS', blocks: [], hourlySlots: [] })
+  })
+
+  it('distinguishes a facility without hours and a facility closed by an exception from an open facility', async () => {
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+      { ...facilities[0], operatingHours: [] },
+      {
+        ...facilities[1], timezone: 'America/New_York',
+        operatingHours: [{ dayOfWeek: 1, openTime: '04:00', closeTime: '12:00' }],
+        scheduleExceptions: [{ date: new Date('2030-01-07T00:00:00Z'), isClosed: true }]
+      },
+      { ...facilities[0], id: 'c' }
+    ] as any)
+    const { data } = await request()
+    expect(data.availabilityStatus).toBe('AVAILABLE')
+    expect(data.facilityDiagnostics.map(row => row.status)).toEqual([
+      'NO_CONFIGURED_FACILITY_HOURS', 'NO_CONFIGURED_FACILITY_HOURS', 'AVAILABLE'
+    ])
+    expect(data.recommendedDays.map(day => day.facilityId)).toEqual(['c'])
+  })
+
+  it('reports arrival saturation separately when a seat is physically free', async () => {
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([{ ...facilities[0], totalSeats: 2 }] as any)
+    vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
+      ...assignment, acceptUntil: new Date('2030-01-07T10:10:00Z')
+    } as any)
+    reservations = [{ ...current, userId: 'other-student', startTime: windowStart }]
+    expect((await request()).data).toMatchObject({ availabilityStatus: 'ARRIVAL_LIMIT_REACHED', blocks: [] })
+  })
+
+  it('returns a configuration reason if no facility has valid overlapping hours', async () => {
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+      { ...facilities[0], operatingHours: [] },
+      { ...facilities[1], operatingHours: [{ dayOfWeek: 1, openTime: '99:00', closeTime: '17:00' }] }
+    ] as any)
+    expect((await request()).data).toMatchObject({
+      availabilityStatus: 'NO_CONFIGURED_FACILITY_HOURS', blocks: [], hourlySlots: []
+    })
   })
 
   it('rejects an unknown exclusion ID', async () => {

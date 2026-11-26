@@ -3,6 +3,7 @@ import prisma from '@@/server/utils/db'
 import { cbtfAvailabilityQuerySchema } from '@@/shared/schemas/cbtf.schema'
 import {
   getStudentSchedulingWindow,
+  getCbtfReservationWindowStatus,
   getAllFacilitiesAvailability,
   getStudentAccommodation,
   getEffectiveExamDurationMinutes,
@@ -10,14 +11,20 @@ import {
 } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
 import type {
+  CbtfAvailabilityStatus,
+  CbtfFacilityAvailabilityDiagnostic,
+  CbtfReservationWindow,
   CbtfStudentBlock,
   CbtfRecommendedDay,
   CbtfStudentStart,
   CbtfReservationDto
 } from '@@/shared/models/cbtf'
 
-export interface CbtfAvailabilityResponse {
+export interface CbtfAvailabilityResponse extends CbtfReservationWindow {
+  availabilityStatus: CbtfAvailabilityStatus
+  facilityDiagnostics: CbtfFacilityAvailabilityDiagnostic[]
   assignmentTitle: string | null
+  configuredTotalSeats: number | null
   studentWindow: {
     start: string
     end: string
@@ -70,7 +77,8 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
   if (!assignment || !assignment.isSchedulable) {
     throw createError({
       statusCode: 400,
-      statusMessage: 'Assignment is not configured for CBTF scheduling'
+      statusMessage: 'Assignment is not configured for CBTF scheduling',
+      data: { availabilityStatus: 'INVALID_ASSIGNMENT_WINDOW' }
     })
   }
 
@@ -123,20 +131,39 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
     accommodation.timeMultiplier
   )
 
-  const { blocks, recommendedDays, hourlySlots } = await getAllFacilitiesAvailability(
-    studentWindow,
-    query.blockId || query.timeOfDayPreference,
-    query.selectedDate,
-    undefined,
-    effectiveDurationMinutes,
-    query.excludeReservationId,
-    accommodation.requiredSeatProperties
-  )
+  const now = new Date()
+  const reservationWindowStatus = getCbtfReservationWindowStatus(assignment, now)
+  const availability = reservationWindowStatus === 'OPEN'
+    ? await getAllFacilitiesAvailability(
+        studentWindow,
+        query.blockId || query.timeOfDayPreference,
+        query.selectedDate,
+        undefined,
+        effectiveDurationMinutes,
+        query.excludeReservationId,
+        accommodation.requiredSeatProperties,
+        session.user.id,
+        now
+      )
+    : {
+        availabilityStatus: reservationWindowStatus === 'NOT_YET_OPEN' ? 'RESERVATION_NOT_OPEN' as const : 'RESERVATION_CLOSED' as const,
+        facilityDiagnostics: [],
+        configuredTotalSeats: null,
+        blocks: [],
+        recommendedDays: [],
+        hourlySlots: []
+      }
 
   return {
     statusCode: 200,
     data: {
       assignmentTitle: assignment.title,
+      ...availability,
+      reservationWindowStatus,
+      reservationWindow: {
+        start: assignment.scheduleWindowStart?.toISOString() ?? null,
+        end: assignment.scheduleWindowEnd?.toISOString() ?? null
+      },
       studentWindow: {
         start: studentWindow.start.toISOString(),
         end: studentWindow.end.toISOString(),
@@ -147,10 +174,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
         timeMultiplier: accommodation.timeMultiplier,
         effectiveDurationMinutes
       },
-      activeReservation: activeReservation ? toCbtfReservationDto(activeReservation) : null,
-      blocks,
-      recommendedDays,
-      hourlySlots
+      activeReservation: activeReservation ? toCbtfReservationDto(activeReservation) : null
     }
   }
 })

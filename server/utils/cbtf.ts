@@ -7,11 +7,14 @@
 
 import { createError } from 'h3'
 import { isAllowedCbtfDuration } from '@@/shared/utils/assignment-scheduling'
+import { getConfiguredCbtfSeatCount } from '@@/shared/utils/cbtf-capacity'
 import type { Prisma, PrismaClient } from '@prisma/client'
 import prisma from '@@/server/utils/db'
 import { sendCbtfIncidentNotification } from './cbtf-notifications'
 import type {
   CbtfFacility,
+  CbtfFacilityAvailabilityStatus,
+  CbtfReservationWindowStatus,
   CbtfReservation,
   CbtfRecommendedDay,
   CbtfHalfDayBlock,
@@ -50,6 +53,9 @@ export interface SlotAvailability {
   arrivalsCount: number
   maxArrivals: number
   occupiedSeatsCount: number
+  eligibleSeatCount: number
+  occupiedEligibleSeatCount: number
+  freeEligibleSeatCount: number
   totalSeats: number
 }
 
@@ -211,12 +217,6 @@ export function getFacilitySeatAllocationOrder(facility: { totalSeats: number; s
   ))].slice(0, facility.totalSeats)
 }
 
-/** A single physical seat must stay free throughout the entire proposed interval. */
-export function hasAvailableCbtfSeat(seatOrder: number[], reservations: { seatNumber: number }[]): boolean {
-  const occupiedSeats = new Set(reservations.map(reservation => reservation.seatNumber))
-  return seatOrder.some(seat => !occupiedSeats.has(seat))
-}
-
 /** Snapshot of a student's effective SSD accommodation. */
 export interface StudentAccommodationSnapshot {
   timeMultiplier: number
@@ -279,7 +279,7 @@ export function getEffectiveExamDurationMinutes(
 ): number {
   const base = baseDurationMinutes ?? 60
   if (!isAllowedCbtfDuration(base)) {
-    throw createError({ statusCode: 400, statusMessage: 'Assignment has an invalid CBTF exam duration' })
+    throw createError({ statusCode: 400, statusMessage: 'Assignment has an invalid CBTF exam duration', data: { availabilityStatus: 'INVALID_ASSIGNMENT_WINDOW' } })
   }
   const multiplier =
     Number.isFinite(timeMultiplier) && (timeMultiplier as number) >= 1
@@ -323,6 +323,29 @@ export async function getFacilitySeatProperties(
   )
 }
 
+const cbtfStartStepMs = 5 * 60_000
+
+function getCbtfDayBounds(
+  date: Date | string,
+  hours: FacilityOperatingHoursResult,
+  timezone: string,
+  durationMinutes: number,
+  examWindow?: Pick<StudentSchedulingWindow, 'start' | 'end'>
+) {
+  const validTime = /^(?:[01][0-9]|2[0-3]):[0-5][0-9]$/
+  if (!hours.isOpen || !hours.openTime || !hours.closeTime ||
+      !validTime.test(hours.openTime) || !validTime.test(hours.closeTime) ||
+      hours.openTime >= hours.closeTime) return
+
+  const start = Math.max(+combineDateAndTime(date, hours.openTime, timezone), examWindow?.start.getTime() ?? -Infinity)
+  const end = Math.min(+combineDateAndTime(date, hours.closeTime, timezone), examWindow?.end.getTime() ?? Infinity)
+  if (end <= start) return
+  return {
+    firstStart: Math.ceil(start / cbtfStartStepMs) * cbtfStartStepMs,
+    latestStart: end - durationMinutes * 60_000
+  }
+}
+
 /**
  * Generates available 5-minute boundary slots for a given date,
  * filtering out throttled slots and capacity-exceeded slots.
@@ -336,35 +359,26 @@ export function generateAvailableSlotsForDate(
   timeZone: string = facility.timezone || DEFAULT_CBTF_TIMEZONE,
   durationMinutes: number = 60,
   examWindow?: Pick<StudentSchedulingWindow, 'start' | 'end'>,
-  eligibleSeatNumbers?: number[]
+  eligibleSeatNumbers?: number[],
+  futureCapacity?: { now: Date; hasFreeSeat: boolean }
 ): SlotAvailability[] {
-  if (!hours.isOpen || !hours.openTime || !hours.closeTime) {
-    return []
-  }
-
-  const openDateTime = combineDateAndTime(targetDate, hours.openTime, timeZone)
-  const closeDateTime = combineDateAndTime(targetDate, hours.closeTime, timeZone)
+  const bounds = getCbtfDayBounds(targetDate, hours, timeZone, durationMinutes, examWindow)
+  if (!bounds) return []
 
   const maxArrivals = calculateMaxArrivalsPerSlot(facility.totalSeats)
   const availableSlots: SlotAvailability[] = []
+  const durationMs = durationMinutes * 60_000
 
-  const stepMs = 5 * 60 * 1000 // 5 minutes
-  const durationMs = durationMinutes * 60 * 1000
-
-  // Facility must remain open for the full exam duration after slot start time
-  const effectiveStartMs = Math.max(openDateTime.getTime(), examWindow?.start.getTime() ?? -Infinity)
-  const effectiveEndMs = Math.min(closeDateTime.getTime(), examWindow?.end.getTime() ?? Infinity)
-  const latestStartMs = effectiveEndMs - durationMs
   const seatOrder = getFacilitySeatAllocationOrder(facility)
   const eligibleSeatSet = eligibleSeatNumbers ? new Set(eligibleSeatNumbers) : null
   const availableSeatOrder = eligibleSeatSet
     ? seatOrder.filter((seat) => eligibleSeatSet.has(seat))
     : seatOrder
 
-  // Round up so arbitrary opening minutes cannot produce unbookable starts.
-  let currentMs = Math.ceil(effectiveStartMs / stepMs) * stepMs
-
-  while (currentMs <= latestStartMs) {
+  const firstStart = futureCapacity
+    ? Math.max(bounds.firstStart, Math.ceil(+futureCapacity.now / cbtfStartStepMs) * cbtfStartStepMs)
+    : bounds.firstStart
+  for (let currentMs = firstStart; currentMs <= bounds.latestStart; currentMs += cbtfStartStepMs) {
     const slotStart = new Date(currentMs)
     const slotEnd = new Date(currentMs + durationMs)
 
@@ -379,23 +393,28 @@ export function generateAvailableSlotsForDate(
     )
 
     const isThrottleOk = arrivalsCount < maxArrivals
-    const occupiedSeatsCount = new Set(activeReservations.map(reservation => reservation.seatNumber)).size
-    const isCapacityOk =
-      availableSeatOrder.length > 0 &&
-      hasAvailableCbtfSeat(availableSeatOrder, activeReservations)
+    const occupiedSeats = new Set(activeReservations.map(reservation => reservation.seatNumber))
+    const eligibleSeatCount = availableSeatOrder.length
+    const occupiedEligibleSeatCount = availableSeatOrder.filter(seat => occupiedSeats.has(seat)).length
+    const freeEligibleSeatCount = eligibleSeatCount - occupiedEligibleSeatCount
 
-    if (isThrottleOk && isCapacityOk) {
+    if (futureCapacity && freeEligibleSeatCount > 0) {
+      futureCapacity.hasFreeSeat = true
+    }
+
+    if (isThrottleOk && freeEligibleSeatCount > 0) {
       availableSlots.push({
         startTime: slotStart,
         endTime: slotEnd,
         arrivalsCount,
         maxArrivals,
-        occupiedSeatsCount,
+        occupiedSeatsCount: occupiedSeats.size,
+        eligibleSeatCount,
+        occupiedEligibleSeatCount,
+        freeEligibleSeatCount,
         totalSeats: facility.totalSeats
       })
     }
-
-    currentMs += stepMs
   }
 
   return availableSlots
@@ -488,12 +507,20 @@ export function assignNextSeat(
 /**
  * Checks when a student may create or change a booking, independently of exam dates.
  */
-export function assertCbtfReservationWindowOpen(
+export function getCbtfReservationWindowStatus(
   assignment: { scheduleWindowStart: Date | null; scheduleWindowEnd: Date | null },
   now = new Date()
-) {
+): CbtfReservationWindowStatus {
   const { scheduleWindowStart: start, scheduleWindowEnd: end } = assignment
-  if (!start || !end || start >= end || now < start || now > end) {
+  if (!start || !end || start >= end || now > end) return 'CLOSED'
+  return now < start ? 'NOT_YET_OPEN' : 'OPEN'
+}
+
+export function assertCbtfReservationWindowOpen(
+  assignment: Parameters<typeof getCbtfReservationWindowStatus>[0],
+  now = new Date()
+) {
+  if (getCbtfReservationWindowStatus(assignment, now) !== 'OPEN') {
     throw createError({
       statusCode: 403,
       statusMessage: 'Reservations can only be created or changed during the Reservation Window'
@@ -541,7 +568,7 @@ export async function getStudentSchedulingWindow(
   const start = assignment.availableFrom
   const end = assignment.acceptUntil
   if (!start || !end || end <= start) {
-    throw createError({ statusCode: 400, statusMessage: 'Assignment must have a valid Available From / Accept Until exam window' })
+    throw createError({ statusCode: 400, statusMessage: 'Assignment must have a valid Available From / Accept Until exam window', data: { availabilityStatus: 'INVALID_ASSIGNMENT_WINDOW' } })
   }
 
   return {
@@ -578,24 +605,26 @@ export async function getAllFacilitiesAvailability(
   tx: PrismaClient | typeof prisma = prisma,
   durationMinutes: number = 60,
   excludeReservationId?: string,
-  requiredSeatProperties: string[] = []
+  requiredSeatProperties: string[] = [],
+  studentId?: string,
+  now = new Date()
 ) {
   const facilities = await tx.cbtfFacility.findMany({
     orderBy: { id: 'asc' },
     include: { operatingHours: true, scheduleExceptions: true, seats: true }
   })
-  if (!facilities.length) return { blocks: [], recommendedDays: [], hourlySlots: [] }
-
-  const reservations = await tx.cbtfReservation.findMany({
+  const configuredTotalSeats = getConfiguredCbtfSeatCount(facilities)
+  const reservations = facilities.length ? await tx.cbtfReservation.findMany({
     where: {
       facilityId: { in: facilities.map(facility => facility.id) },
       status: { in: ['SCHEDULED', 'CHECKED_IN'] },
       ...(excludeReservationId ? { id: { not: excludeReservationId } } : {}),
       startTime: { lt: studentWindow.end },
-      endTime: { gt: new Date(Math.max(+studentWindow.start, Date.now())) }
+      endTime: { gt: new Date(Math.max(+studentWindow.start, +now)) }
     },
-    select: { facilityId: true, startTime: true, endTime: true, seatNumber: true }
-  })
+    select: { facilityId: true, startTime: true, endTime: true, seatNumber: true, userId: true }
+  }) : []
+  const studentReservations = studentId ? reservations.filter(reservation => reservation.userId === studentId) : []
   const byFacility = Map.groupBy(reservations, reservation => reservation.facilityId)
   const [blockId, blockTimezone] = preferenceOrBlockId?.split(':') ?? []
   const results = await Promise.all(facilities.map(async facility => {
@@ -607,9 +636,9 @@ export async function getAllFacilitiesAvailability(
     )
     const result = await getRecommendedDaysAndSlots(
       facility, studentWindow, blockId, selectedDateStr, tx, durationMinutes,
-      excludeReservationId, eligibleSeats, byFacility.get(facility.id) ?? []
+      excludeReservationId, eligibleSeats, byFacility.get(facility.id) ?? [], studentReservations, now
     )
-    return { ...result, timezone }
+    return { ...result, timezone, facilityId: facility.id, facilityName: facility.name }
   }))
 
   const blocks = new Map<string, CbtfStudentBlock>()
@@ -632,7 +661,14 @@ export async function getAllFacilitiesAvailability(
       slots.set(startTime, { startTime, endTime, formattedTime })
     }
   }
+  const statuses = new Set(results.map(result => result.status))
+  const availabilityStatus: CbtfFacilityAvailabilityStatus = (
+    ['AVAILABLE', 'STUDENT_CONFLICT', 'ARRIVAL_LIMIT_REACHED', 'NO_AVAILABLE_SEATS', 'NO_FUTURE_STARTS'] as const
+  ).find(status => statuses.has(status)) ?? 'NO_CONFIGURED_FACILITY_HOURS'
   return {
+    availabilityStatus,
+    facilityDiagnostics: results.map(({ facilityId, facilityName, status }) => ({ facilityId, facilityName, status })),
+    configuredTotalSeats,
     blocks: [...blocks.values()].sort((a, b) =>
       a.id.slice(0, 10).localeCompare(b.id.slice(0, 10)) ||
       a.timezone.localeCompare(b.timezone) ||
@@ -652,14 +688,16 @@ export async function getRecommendedDaysAndSlots(
   durationMinutes: number = 60,
   excludeReservationId?: string,
   eligibleSeatNumbers?: number[],
-  preloadedReservations?: Pick<CbtfReservation, 'startTime' | 'endTime' | 'seatNumber'>[]
+  preloadedReservations?: Pick<CbtfReservation, 'startTime' | 'endTime' | 'seatNumber'>[],
+  studentReservations: Pick<CbtfReservation, 'startTime' | 'endTime'>[] = [],
+  now = new Date()
 ): Promise<{
+  status: CbtfFacilityAvailabilityStatus
   blocks: CbtfHalfDayBlock[]
   recommendedDays: CbtfRecommendedDay[]
   hourlySlots: CbtfHourlySlotChoice[]
 }> {
   const timeZone = facility.timezone || DEFAULT_CBTF_TIMEZONE
-  const now = new Date()
   const searchStart = new Date(Math.max(studentWindow.start.getTime(), now.getTime()))
   const searchEnd = new Date(studentWindow.end)
 
@@ -700,20 +738,30 @@ export async function getRecommendedDaysAndSlots(
     openSlots: SlotAvailability[]
   }[] = []
 
-  // Iterate calendar days within the student window (max 30 days lookahead) in facility timezone
+  // Scan facility-local dates in the exam window, retaining the legacy horizon for legacy callers.
   const localStartDateStr = getLocalDateString(searchStart, timeZone)
   const localEndDateStr = getLocalDateString(searchEnd, timeZone)
-  const startParts = localStartDateStr.split('-').map(Number)
+  const firstDate = preloadedReservations ? getLocalDateString(studentWindow.start, timeZone) : localStartDateStr
+  const startParts = firstDate.split('-').map(Number)
   const cursorDate = new Date(Date.UTC(startParts[0], startParts[1] - 1, startParts[2]))
   const maxDays = 30
   let daysScanned = 0
 
-  while (daysScanned < maxDays) {
+  let hasOverlappingHours = false
+  let hasFutureStarts = false
+  let hasConflict = false
+  const futureCapacity = { now, hasFreeSeat: false }
+  const targetDate = preferenceOrBlockId?.match(/^\d{4}-\d{2}-\d{2}/)?.[0] ?? selectedDateStr
+
+  while (preloadedReservations ? facility.operatingHours.length || facility.scheduleExceptions.length : daysScanned < maxDays) {
     daysScanned++
     const dateStr = cursorDate.toISOString().split('T')[0]
     if (dateStr > localEndDateStr) {
       break
     }
+
+    // Six blocks are enough for the existing display policy. Continue through any explicitly requested date.
+    if (preloadedReservations && candidateBlockItems.length >= 6 && (!targetDate || dateStr > targetDate)) break
 
     const dayStartUtc = combineDateAndTime(dateStr, '00:00', timeZone)
     const dayEndUtc = combineDateAndTime(dateStr, '23:59', timeZone)
@@ -722,7 +770,26 @@ export async function getRecommendedDaysAndSlots(
       ? resolveFacilityHours(facility, dateStr, timeZone)
       : await getFacilityOperatingHoursForDate(facility.id, dayStartUtc, tx as PrismaClient, timeZone)
 
-    if (hours.isOpen && hours.openTime && hours.closeTime) {
+    const bounds = getCbtfDayBounds(dateStr, hours, timeZone, durationMinutes, studentWindow)
+    hasOverlappingHours ||= !!bounds
+
+    if (preloadedReservations && dateStr < localStartDateStr) {
+      if (hasOverlappingHours) {
+        cursorDate.setTime(Date.parse(localStartDateStr + 'T00:00:00Z'))
+      } else {
+        cursorDate.setUTCDate(cursorDate.getUTCDate() + 1)
+      }
+      continue
+    }
+
+    if (bounds && hours.openTime && hours.closeTime) {
+      const firstFutureStart = Math.max(bounds.firstStart, Math.ceil(+now / cbtfStartStepMs) * cbtfStartStepMs)
+      if (firstFutureStart > bounds.latestStart) {
+        cursorDate.setUTCDate(cursorDate.getUTCDate() + 1)
+        continue
+      }
+      hasFutureStarts = true
+      if (eligibleSeatNumbers?.length === 0) break
       const dayReservations = allReservations.filter(
         (r) => r.startTime <= dayEndUtc && r.endTime > dayStartUtc
       )
@@ -748,8 +815,16 @@ export async function getRecommendedDaysAndSlots(
         timeZone,
         durationMinutes,
         studentWindow,
-        eligibleSeatNumbers
-      ).filter(withinStudentWindow)
+        eligibleSeatNumbers,
+        futureCapacity
+      ).filter(slot => {
+        if (!withinStudentWindow(slot) || slot.startTime < now) return false
+        const overlaps = studentReservations.some(reservation =>
+          reservation.startTime < slot.endTime && reservation.endTime > slot.startTime
+        )
+        hasConflict ||= overlaps
+        return !overlaps
+      })
 
       const dayOfWeek = getLocalDayOfWeek(dayStartUtc, timeZone)
       const dayName = dayNames[dayOfWeek]
@@ -774,7 +849,7 @@ export async function getRecommendedDaysAndSlots(
         const openSlots = allSlots.filter(
           (s) =>
             s.startTime < afternoonDividingUtc &&
-            s.startTime.getTime() >= now.getTime() + 15 * 60 * 1000
+            s.startTime >= now
         )
 
         if (openSlots.length > 0) {
@@ -825,7 +900,7 @@ export async function getRecommendedDaysAndSlots(
         const openSlots = allSlots.filter(
           (s) =>
             s.startTime >= afternoonDividingUtc &&
-            s.startTime.getTime() >= now.getTime() + 15 * 60 * 1000
+            s.startTime >= now
         )
 
         if (openSlots.length > 0) {
@@ -953,7 +1028,7 @@ export async function getRecommendedDaysAndSlots(
         hour: parts.hour24,
         startTime: slot.startTime.toISOString(),
         endTime: slot.endTime.toISOString(),
-        formattedTime: `${parts.formattedTime} (${timeZone})`
+        formattedTime: parts.formattedTime
       }
     })
   } else if (chosenBlockItem) {
@@ -1005,7 +1080,15 @@ export async function getRecommendedDaysAndSlots(
     })
   }
 
+  const status: CbtfFacilityAvailabilityStatus = blocks.length ? 'AVAILABLE'
+    : hasConflict ? 'STUDENT_CONFLICT'
+    : futureCapacity.hasFreeSeat ? 'ARRIVAL_LIMIT_REACHED'
+    : hasFutureStarts ? 'NO_AVAILABLE_SEATS'
+    : hasOverlappingHours ? 'NO_FUTURE_STARTS'
+    : 'NO_CONFIGURED_FACILITY_HOURS'
+
   return {
+    status,
     blocks,
     recommendedDays,
     hourlySlots

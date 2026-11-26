@@ -117,6 +117,10 @@
           <p class="text-sm text-neutral-500">Finding available testing center slots…</p>
         </div>
 
+        <p v-else-if="availabilityMessage" role="status" class="p-6 text-center text-sm text-neutral-600 dark:text-neutral-400">
+          {{ availabilityMessage }}
+        </p>
+
         <!-- Success Screen (Post-Confirmation) -->
         <div v-else-if="confirmedReservation" class="py-8 text-center space-y-4">
           <div
@@ -194,7 +198,7 @@
               </p>
             </div>
             <p v-else class="text-neutral-500 text-sm">
-              No open test center blocks found within your assignment window.
+              No testing-center availability is currently available within your exam window.
             </p>
           </div>
 
@@ -228,8 +232,8 @@
                       In Progress
                     </UBadge>
                   </div>
-                  <p class="text-xs text-neutral-500 dark:text-neutral-400">
-                    {{ block.dateLabel }} · {{ block.timezone }}
+                  <p class="break-words text-xs text-neutral-500 dark:text-neutral-400">
+                    {{ block.dateLabel }} · {{ formatTimezoneLabel(block.timezone) }}
                   </p>
                 </div>
 
@@ -244,6 +248,7 @@
           <p class="text-sm text-neutral-600 dark:text-neutral-400">
             Pick an arrival time for
             <strong>{{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong>.
+            <span v-if="selectedBlock"> Times shown in {{ formatTimezoneLabel(selectedBlock.timezone) }}.</span>
           </p>
 
           <div
@@ -317,7 +322,11 @@
               <div>
                 <p class="text-xs text-neutral-500 uppercase">Time Slot</p>
                 <p class="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                  {{ selectedSlot?.formattedTime }}
+                  {{
+                    selectedBlock
+                      ? `${selectedSlot?.formattedTime} · ${formatTimezoneLabel(selectedBlock.timezone)}`
+                      : selectedSlot?.formattedTime
+                  }}
                 </p>
               </div>
             </div>
@@ -367,7 +376,7 @@
               label="Next"
               trailing-icon="i-lucide-arrow-right"
               :disabled="isNextDisabled"
-              @click="currentStep++"
+              @click="goToNextStep"
             />
             <UButton
               v-else
@@ -388,10 +397,25 @@
 import type { AssignmentRow } from '@@/shared/models/assignment'
 import type {
   CbtfReservationDto,
+  CbtfAvailabilityStatus,
   CbtfStudentBlock,
   CbtfStudentStart
 } from '@@/shared/models/cbtf'
 import { useCbtfStudent, type CbtfAvailabilityData } from '~/composables/features/useCbtfStudent'
+
+const timezoneLabels: Readonly<Record<string, string>> = {
+  'America/New_York': 'Eastern (ET)',
+  'America/Chicago': 'Central (CT)',
+  'America/Denver': 'Mountain (MT)',
+  'America/Los_Angeles': 'Pacific (PT)',
+  'America/Phoenix': 'Arizona (MST)',
+  'America/Anchorage': 'Alaska (AKT)',
+  'Pacific/Honolulu': 'Hawaii (HST)'
+}
+
+function formatTimezoneLabel(timezone: string): string {
+  return timezoneLabels[timezone] ?? timezone.slice(timezone.lastIndexOf('/') + 1).replaceAll('_', ' ')
+}
 
 const props = defineProps<{
   assignment: AssignmentRow | null
@@ -418,6 +442,23 @@ const cancelling = ref(false)
 const selectedBlockId = ref<string>('')
 const selectedSlot = ref<CbtfStudentStart | null>(null)
 const availabilityData = ref<CbtfAvailabilityData | null>(null)
+const availabilityError = ref<'INVALID_ASSIGNMENT_WINDOW' | 'REQUEST_FAILED' | null>(null)
+const availabilityMessages: Record<Exclude<CbtfAvailabilityStatus, 'AVAILABLE'> | 'REQUEST_FAILED', string> = {
+  INVALID_ASSIGNMENT_WINDOW: 'This exam is not fully configured for CBTF scheduling. Please contact your instructor.',
+  RESERVATION_NOT_OPEN: 'The reservation window for this exam has not opened yet.',
+  RESERVATION_CLOSED: 'The reservation window for this exam is currently closed.',
+  NO_CONFIGURED_FACILITY_HOURS: 'No testing center is configured with operating hours that overlap this exam window.',
+  NO_AVAILABLE_SEATS: 'No testing-center availability is currently available within your exam window.',
+  NO_FUTURE_STARTS: 'There are no remaining exam start times within your exam window.',
+  ARRIVAL_LIMIT_REACHED: 'All remaining testing-center arrival times within your exam window are full.',
+  STUDENT_CONFLICT: 'The remaining available exam times overlap your existing testing-center reservation.',
+  REQUEST_FAILED: 'Testing-center availability could not be loaded. Please try again.'
+}
+
+const availabilityMessage = computed(() => {
+  const status = availabilityError.value ?? availabilityData.value?.availabilityStatus
+  return status && status !== 'AVAILABLE' ? availabilityMessages[status] : null
+})
 
 const effectiveDurationMinutes = computed(
   () =>
@@ -457,7 +498,8 @@ const selectedBlock = computed<CbtfStudentBlock | undefined>(() => {
 })
 
 const isNextDisabled = computed(() => {
-  if (currentStep.value === 1) return !selectedBlockId.value
+  if (loadingAvailability.value || availabilityMessage.value) return true
+  if (currentStep.value === 1) return !selectedBlock.value
   if (currentStep.value === 2) return !selectedSlot.value
   return false
 })
@@ -466,6 +508,7 @@ const isNextDisabled = computed(() => {
 const loadAvailability = async (blockId?: string) => {
   if (!props.assignment?.id) return
   loadingAvailability.value = true
+  availabilityError.value = null
   try {
     const data = await fetchAvailability(
       props.assignment.id,
@@ -478,7 +521,11 @@ const loadAvailability = async (blockId?: string) => {
       selectedBlockId.value = data.blocks[0].id
     }
   } catch (err) {
-    console.error(err)
+    const response = err as { data?: { data?: { availabilityStatus?: string } } } | null
+    availabilityData.value = null
+    availabilityError.value = response?.data?.data?.availabilityStatus === 'INVALID_ASSIGNMENT_WINDOW'
+      ? 'INVALID_ASSIGNMENT_WINDOW'
+      : 'REQUEST_FAILED'
   } finally {
     loadingAvailability.value = false
   }
@@ -489,6 +536,13 @@ const chooseBlock = async (block: CbtfStudentBlock) => {
   selectedSlot.value = null
   currentStep.value = 2
   await loadAvailability(block.id)
+}
+
+const goToNextStep = () => {
+  if (currentStep.value === 1 && selectedBlock.value) {
+    return chooseBlock(selectedBlock.value)
+  }
+  currentStep.value++
 }
 
 const chooseSlot = (slot: CbtfStudentStart) => {
@@ -586,6 +640,8 @@ watch(open, (isOpen) => {
     currentStep.value = 1
     selectedSlot.value = null
     selectedBlockId.value = ''
+    availabilityData.value = null
+    availabilityError.value = null
     if (!props.existingReservation) {
       loadAvailability()
     }

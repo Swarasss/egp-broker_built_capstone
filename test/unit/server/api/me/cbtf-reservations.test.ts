@@ -144,41 +144,45 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       )
     })
 
-    it.each([90, 240])('merges the available five-minute starts for a %i-minute exam', async duration => {
-      vi.useFakeTimers()
-      vi.setSystemTime(new Date('2026-09-30T00:00:00Z'))
-      try {
-        const assignmentId = 'clh1234567890123456789012'
-        vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
-          id: assignmentId, courseId: 'course-1', title: 'Exam', isSchedulable: true,
-          cbtfDurationMinutes: duration,
-          availableFrom: new Date('2026-10-01T00:00:00Z'),
-          acceptUntil: new Date('2026-10-01T23:59:00Z')
-        } as any)
-        vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
-        vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
-        vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
-          configuredFacility({ id: 'small', timezone: 'UTC', totalSeats: 1 }, '08:02', '12:15'),
-          configuredFacility({ id: 'large', timezone: 'UTC', totalSeats: 57 }, '09:00', '14:00')
-        ] as any)
-        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
-        const response = await availabilityGet(mockEvent(undefined, { assignmentId }))
-        expect(response.data.blocks[0]!.id).toBe('2026-10-01-morning:UTC')
-        const blockId = response.data.blocks[0]!.id
-        const selected = await availabilityGet(mockEvent(undefined, { assignmentId, blockId }))
-        const slots = selected.data.hourlySlots
-        expect(slots[0]!.startTime).toBe('2026-10-01T08:05:00.000Z')
-        expect(slots.at(-1)!.endTime).toBe('2026-10-01T14:00:00.000Z')
-        expect(new Set(slots.map(slot => slot.startTime)).size).toBe(slots.length)
-        for (const slot of slots) {
-          expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
-          expect(+new Date(slot.endTime) - +new Date(slot.startTime)).toBe(duration * 60_000)
+    it.each([[90, '13:55'], [240, '14:00']] as const)(
+      'merges the available five-minute starts for a %i-minute exam', async (duration, lastEnd) => {
+        vi.useFakeTimers()
+        vi.setSystemTime(new Date('2026-09-30T00:00:00Z'))
+        try {
+          const assignmentId = 'clh1234567890123456789012'
+          vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
+            id: assignmentId, courseId: 'course-1', title: 'Exam', isSchedulable: true,
+            cbtfDurationMinutes: duration,
+            scheduleWindowStart: new Date('2026-09-29T00:00:00Z'),
+            scheduleWindowEnd: new Date('2026-10-01T00:00:00Z'),
+            availableFrom: new Date('2026-10-01T00:00:00Z'),
+            acceptUntil: new Date('2026-10-01T23:59:00Z')
+          } as any)
+          vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
+          vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+          vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+            configuredFacility({ id: 'small', timezone: 'UTC', totalSeats: 1 }, '08:02', '12:15'),
+            configuredFacility({ id: 'large', timezone: 'UTC', totalSeats: 57 }, '09:00', '14:00')
+          ] as any)
+          vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
+          const response = await availabilityGet(mockEvent(undefined, { assignmentId }))
+          expect(response.data.blocks[0]!.id).toBe('2026-10-01-morning:UTC')
+          const blockId = response.data.blocks[0]!.id
+          const selected = await availabilityGet(mockEvent(undefined, { assignmentId, blockId }))
+          const slots = selected.data.hourlySlots
+          expect(slots[0]!.startTime).toBe('2026-10-01T08:05:00.000Z')
+          expect(slots.at(-1)!.endTime).toBe(`2026-10-01T${lastEnd}:00.000Z`)
+          expect(new Set(slots.map(slot => slot.startTime)).size).toBe(slots.length)
+          for (const slot of slots) {
+            expect(new Date(slot.startTime).getUTCMinutes() % 5).toBe(0)
+            expect(+new Date(slot.endTime) - +new Date(slot.startTime)).toBe(duration * 60_000)
+          }
+          expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
+        } finally {
+          vi.useRealTimers()
         }
-        expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
-      } finally {
-        vi.useRealTimers()
       }
-    })
+    )
 
     it('returns availability recommendations for schedulable assignment', async () => {
       const event = mockEvent(
@@ -1094,7 +1098,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
 
       expect(response.statusCode).toBe(200)
       expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
-        where: { id: 'res-duration' },
+        where: { id: 'res-duration', status: 'SCHEDULED' },
         data: expect.objectContaining({
           startTime: new Date(startTime), endTime: new Date('2030-01-07T12:00:00.000Z')
         })

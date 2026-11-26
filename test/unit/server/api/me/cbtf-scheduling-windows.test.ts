@@ -3,6 +3,10 @@ import availabilityGet from '../../../../../server/api/me/cbtf/availability.get'
 import reservationsPost from '../../../../../server/api/me/cbtf/reservations.post'
 import reservationPatch from '../../../../../server/api/me/cbtf/reservations/[id].patch'
 import assignmentPatch from '../../../../../server/api/me/assignments/[id].patch'
+import facilityPost from '../../../../../server/api/admin/cbtf/facility.post'
+import facilityPatch from '../../../../../server/api/admin/cbtf/facility.patch'
+import facilityDelete from '../../../../../server/api/admin/cbtf/facility/[id].delete'
+import operatingHoursPost from '../../../../../server/api/admin/cbtf/operating-hours.post'
 import prisma from '@@/server/utils/db'
 import { notifyCbtfScheduleFailure } from '@@/server/services/alert.service'
 import { syncCbtfReservationCanvasOverride } from '@@/server/utils/cbtf-canvas'
@@ -14,11 +18,12 @@ vi.mock('@@/server/utils/db', () => ({
     enrollment: { findFirst: vi.fn() },
     passRedemption: { findFirst: vi.fn() },
     cbtfReservation: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn() },
-    cbtfFacility: { findMany: vi.fn(), findUnique: vi.fn() },
+    cbtfFacility: { findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
+    cbtfProctorShift: { count: vi.fn() },
     cbtfSeat: { findMany: vi.fn().mockResolvedValue([]) },
     cbtfStudentAccommodation: { findUnique: vi.fn().mockResolvedValue(null) },
     cbtfScheduleException: { findFirst: vi.fn() },
-    cbtfOperatingHours: { findUnique: vi.fn() },
+    cbtfOperatingHours: { findUnique: vi.fn(), upsert: vi.fn() },
     $queryRaw: vi.fn().mockResolvedValue([]),
     $transaction: vi.fn()
   }
@@ -35,7 +40,7 @@ vi.mock('h3', async () => ({
   getQuery: (event: any) => event.query,
   readBody: async (event: any) => event.body,
   readValidatedBody: async (event: any, validate: any) => validate(event.body),
-  getRouterParam: () => 'reservation',
+  getRouterParam: (event: any) => event.facilityId ?? 'reservation',
   createError: (options: any) => Object.assign(new Error(options.statusMessage), options)
 }))
 
@@ -106,6 +111,180 @@ describe('CBTF exam dates versus reservation action dates', () => {
     expect(slots.at(-1)!.startTime).toBe('2030-01-07T10:30:00.000Z')
     expect(slots.at(-1)!.endTime).toBe('2030-01-07T12:00:00.000Z')
   })
+
+  it.each([{ availableFrom: null }, { acceptUntil: null }, { cbtfDurationMinutes: 75 }])(
+    'returns an explicit configuration error for %j', async change => {
+      vi.mocked(prisma.assignment.findUnique).mockResolvedValue({ ...assignment, ...change } as any)
+      await expect(availabilityGet(event())).rejects.toMatchObject({
+        statusCode: 400, data: { availabilityStatus: 'INVALID_ASSIGNMENT_WINDOW' }
+      })
+      expect(prisma.cbtfFacility.findMany).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    ['2029-12-31T23:59:59Z', 'NOT_YET_OPEN', 'RESERVATION_NOT_OPEN'],
+    ['2030-01-01T00:00:00Z', 'OPEN', 'AVAILABLE'],
+    ['2030-01-05T00:00:00Z', 'OPEN', 'AVAILABLE'],
+    ['2030-01-05T00:00:01Z', 'CLOSED', 'RESERVATION_CLOSED']
+  ])('returns the same reservation-window decision as writes at %s', async (now, status, availabilityStatus) => {
+    vi.setSystemTime(new Date(now))
+    const { data } = await availabilityGet(event())
+    expect(data).toMatchObject({
+      reservationWindowStatus: status, availabilityStatus,
+      reservationWindow: { start: assignment.scheduleWindowStart.toISOString(), end: assignment.scheduleWindowEnd.toISOString() }
+    })
+    if (status === 'OPEN') {
+      expect(data.blocks.length).toBeGreaterThan(0)
+    } else {
+      expect(data.blocks).toEqual([])
+      expect(data.hourlySlots).toEqual([])
+      expect(prisma.cbtfFacility.findMany).not.toHaveBeenCalled()
+    }
+  })
+
+  it('distinguishes expired starts from missing facility hours', async () => {
+    vi.setSystemTime(new Date('2030-01-07T12:01:00Z'))
+    vi.mocked(prisma.assignment.findUnique).mockResolvedValue({
+      ...assignment, scheduleWindowEnd: new Date('2030-01-08T00:00:00Z')
+    } as any)
+    const { data } = await availabilityGet(event())
+    expect(data).toMatchObject({ availabilityStatus: 'NO_FUTURE_STARTS', blocks: [] })
+  })
+
+  it('uses newly configured, resized, and deleted facilities on subsequent scheduling requests', async () => {
+    const centers = new Map<string, any>([
+      ['a', { ...facilities[0], totalSeats: 1, seatAllocationOrder: [1] }]
+    ])
+    const reservations = [
+      { facilityId: 'a', seatNumber: 1, startTime: new Date('2030-01-07T08:55:00Z'), endTime: new Date('2030-01-07T12:00:00Z') }
+    ]
+    vi.stubGlobal('getUserSession', async (request: any) => ({
+      user: { id: 'student', globalRole: request.role ?? 'USER' }
+    }))
+    const admin = (body: object = {}) => ({ role: 'ADMIN', body, facilityId: 'b' }) as any
+    vi.mocked(prisma.cbtfFacility.findMany).mockImplementation(async (query: any) =>
+      [...centers.values()].filter(center => query.where?.id.in.includes(center.id) ?? true)
+    )
+    vi.mocked(prisma.$queryRaw).mockImplementation(async (query: any) =>
+      [...centers.keys()].filter(id => !query.values.length || query.values.includes(id)).map(id => ({ id }))
+    )
+    vi.mocked(prisma.cbtfFacility.findUnique).mockImplementation(async ({ where }) => centers.get(where.id!) ?? null)
+    vi.mocked(prisma.cbtfFacility.create).mockImplementation(async ({ data }) => {
+      const center = { ...data, id: 'b', seats: [], operatingHours: [], scheduleExceptions: [] }
+      centers.set(center.id, center)
+      return center as any
+    })
+    vi.mocked(prisma.cbtfFacility.update).mockImplementation(async ({ where, data }) => {
+      const center = { ...centers.get(where.id!), ...data }
+      centers.set(where.id!, center)
+      return center
+    })
+    vi.mocked(prisma.cbtfFacility.delete).mockImplementation(async ({ where }) => {
+      const center = centers.get(where.id!)
+      centers.delete(where.id!)
+      return center
+    })
+    vi.mocked(prisma.cbtfOperatingHours.upsert).mockImplementation(async ({ create }) => {
+      const center = centers.get(create.facilityId)
+      center.operatingHours = center.operatingHours.filter((hours: typeof create) => hours.dayOfWeek !== create.dayOfWeek)
+      center.operatingHours.push(create)
+      return create as any
+    })
+    vi.mocked(prisma.cbtfReservation.findMany).mockImplementation(async ({ where }: any) =>
+      reservations.filter(row => where.facilityId.in.includes(row.facilityId)) as any
+    )
+    vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(0)
+    vi.mocked(prisma.cbtfProctorShift.count).mockResolvedValue(0)
+
+    const start = '2030-01-07T09:15:00.000Z'
+    const request = event(start)
+    const read = async () => (await availabilityGet(request)).data
+    expect(await read()).toMatchObject({ configuredTotalSeats: 1, hourlySlots: [] })
+    await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
+
+    const order = [1, 12, ...Array.from({ length: 10 }, (_, i) => i + 2)]
+    const created = await facilityPost(admin({
+      name: 'Center B', totalSeats: 12, timezone: 'America/New_York', seatAllocationOrder: order
+    }))
+    expect(created.data.timezone).toBe('America/New_York')
+    expect(await read()).toMatchObject({ configuredTotalSeats: 13, hourlySlots: [] })
+    await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
+
+    await operatingHoursPost(admin({ facilityId: 'b', dayOfWeek: 1, openTime: '04:15', closeTime: '07:00' }))
+    const available = await read()
+    expect(available.facilityDiagnostics.map(row => row.status)).toEqual(['NO_AVAILABLE_SEATS', 'AVAILABLE'])
+    expect(available.blocks[0]?.timezone).toBe('America/New_York')
+    expect(available.hourlySlots[0]).toMatchObject({ startTime: start, formattedTime: '4:15 AM' })
+    await expect(reservationsPost(event('2030-01-07T09:10:00Z'))).rejects.toMatchObject({ statusCode: 409 })
+    expect((await reservationsPost(request)).data).toMatchObject({ facilityId: 'b', seatNumber: 1 })
+
+    reservations.push({
+      facilityId: 'b', seatNumber: 1, startTime: new Date(start), endTime: new Date('2030-01-07T10:45:00Z')
+    })
+    expect((await read()).hourlySlots.some(slot => slot.startTime === start)).toBe(false)
+    await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
+
+    const resized = await facilityPatch(admin({ facilityId: 'b', totalSeats: 13 }))
+    expect(resized.data.seatAllocationOrder).toEqual([...order, 13])
+    expect(await read()).toMatchObject({ configuredTotalSeats: 14 })
+    expect((await read()).hourlySlots.some(slot => slot.startTime === start)).toBe(true)
+    expect((await reservationsPost(request)).data).toMatchObject({ facilityId: 'b', seatNumber: 12 })
+
+    reservations.pop()
+    centers.get('b').scheduleExceptions.push({ date: new Date(start), isClosed: true })
+    expect(await read()).toMatchObject({ configuredTotalSeats: 14, hourlySlots: [] })
+    await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
+    centers.get('b').scheduleExceptions.pop()
+    expect((await reservationsPost(request)).data.facilityId).toBe('b')
+
+    await operatingHoursPost(admin({ facilityId: 'b', dayOfWeek: 1, openTime: '08:00', closeTime: '11:00' }))
+    expect((await read()).facilityDiagnostics[1]?.status).toBe('NO_CONFIGURED_FACILITY_HOURS')
+    await operatingHoursPost(admin({ facilityId: 'b', dayOfWeek: 1, openTime: '04:15', closeTime: '07:00' }))
+    await facilityPatch(admin({ facilityId: 'b', timezone: 'UTC' }))
+    expect((await read()).facilityDiagnostics[1]?.status).toBe('NO_CONFIGURED_FACILITY_HOURS')
+    await facilityPatch(admin({ facilityId: 'b', timezone: 'America/New_York' }))
+    expect((await read()).facilityDiagnostics[1]?.status).toBe('AVAILABLE')
+
+    centers.get('b').seats = resized.data.seatAllocationOrder.map((seatNumber: number) => ({ seatNumber, properties: ['SSD'] }))
+    expect((await read()).facilityDiagnostics[1]?.status).toBe('NO_AVAILABLE_SEATS')
+    centers.get('b').seats = []
+    expect((await read()).facilityDiagnostics[1]?.status).toBe('AVAILABLE')
+
+    await facilityDelete(admin())
+    expect(await read()).toMatchObject({
+      configuredTotalSeats: 1, hourlySlots: [],
+      facilityDiagnostics: [{ facilityId: 'a', status: 'NO_AVAILABLE_SEATS' }]
+    })
+    await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
+    'availability and %s agree on near-term and past starts', async (method, handler) => {
+      vi.setSystemTime(new Date('2030-01-07T09:02:00Z'))
+      const openWindow = { ...assignment, scheduleWindowEnd: new Date('2030-01-07T12:00:00Z') }
+      vi.mocked(prisma.assignment.findUnique).mockResolvedValue(openWindow as any)
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'reservation', facilityId: 'a', userId: 'student', status: 'SCHEDULED', assignment: openWindow
+      } as any)
+      const near = '2030-01-07T09:05:00.000Z'
+      const past = '2030-01-07T09:00:00.000Z'
+      const request = event(near)
+      if (method === 'PATCH') {
+        request.query.excludeReservationId = 'reservation'
+        vi.mocked(prisma.cbtfReservation.findFirst).mockImplementation(async ({ where }: any) =>
+          where.id === 'reservation' ? { id: 'reservation' } as any : null
+        )
+      }
+      const { data } = await availabilityGet(request)
+      expect(data.hourlySlots[0]?.startTime).toBe(near)
+      expect(data.hourlySlots.some(slot => slot.startTime === past)).toBe(false)
+      expect((await handler(request)).data.startTime).toBe(near)
+      await expect(handler(event(past))).rejects.toMatchObject({
+        statusCode: 400, statusMessage: expect.stringContaining('past')
+      })
+    }
+  )
 
   it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
     '%s books a later exam ending exactly at Accept Until, using deterministic facility selection', async (_method, handler) => {

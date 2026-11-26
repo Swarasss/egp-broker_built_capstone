@@ -171,3 +171,30 @@ export interface CbtfAccommodationDto {
   notes: string | null
   updatedAt: string
 }
+
+export type CbtfReservationWindowStatus = 'OPEN' | 'NOT_YET_OPEN' | 'CLOSED'
+
+export interface CbtfReservationWindow {
+  reservationWindowStatus: CbtfReservationWindowStatus
+  reservationWindow: { start: string | null; end: string | null }
+}
+
+export type CbtfFacilityAvailabilityStatus =
+  | 'AVAILABLE'
+  | 'NO_CONFIGURED_FACILITY_HOURS'
+  | 'NO_FUTURE_STARTS'
+  | 'NO_AVAILABLE_SEATS'
+  | 'ARRIVAL_LIMIT_REACHED'
+  | 'STUDENT_CONFLICT'
+
+export interface CbtfFacilityAvailabilityDiagnostic {
+  facilityId: string
+  facilityName: string
+  status: CbtfFacilityAvailabilityStatus
+}
+
+export type CbtfAvailabilityStatus =
+  | CbtfFacilityAvailabilityStatus
+  | 'INVALID_ASSIGNMENT_WINDOW'
+  | 'RESERVATION_NOT_OPEN'
+  | 'RESERVATION_CLOSED'

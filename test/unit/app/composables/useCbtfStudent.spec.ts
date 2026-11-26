@@ -148,11 +148,11 @@ describe('useCbtfStudent Composable', () => {
     mockFetch.mockResolvedValueOnce({ data: newRes })
 
     const { createReservation } = useCbtfStudent()
-    const result = await createReservation('asg-3', '2026-10-06T10:00:00.000Z', 'fac-1')
+    const result = await createReservation('asg-3', '2026-10-06T10:00:00.000Z')
 
     expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/reservations', {
       method: 'POST',
-      body: { facilityId: 'fac-1', assignmentId: 'asg-3', startTime: '2026-10-06T10:00:00.000Z' }
+      body: { assignmentId: 'asg-3', startTime: '2026-10-06T10:00:00.000Z' }
     })
     expect(mockToast.add).toHaveBeenCalledWith(expect.objectContaining({ color: 'success' }))
     expect(mockRefresh).toHaveBeenCalled()
@@ -169,11 +169,11 @@ describe('useCbtfStudent Composable', () => {
     mockFetch.mockResolvedValueOnce({ data: updated })
 
     const { rescheduleReservation } = useCbtfStudent()
-    const result = await rescheduleReservation('res-1', '2026-10-07T14:00:00.000Z', 'fac-2')
+    const result = await rescheduleReservation('res-1', '2026-10-07T14:00:00.000Z')
 
     expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/reservations/res-1', {
       method: 'PATCH',
-      body: { facilityId: 'fac-2', startTime: '2026-10-07T14:00:00.000Z' }
+      body: { startTime: '2026-10-07T14:00:00.000Z' }
     })
     expect(mockToast.add).toHaveBeenCalledWith(expect.objectContaining({ color: 'success' }))
     expect(mockRefresh).toHaveBeenCalled()

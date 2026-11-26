@@ -32,6 +32,10 @@
       <p v-if="creatingFacility" class="text-sm">New facility</p>
       <p v-else-if="facility" class="text-sm">Selected facility: {{ facility.name }}</p>
     </div>
+    <p class="text-sm text-neutral-600 dark:text-neutral-400">
+      {{ facilities.length }} testing {{ facilities.length === 1 ? 'center' : 'centers' }} ·
+      {{ configuredTotalSeats }} configured seats
+    </p>
 
     <!-- Navigation Tabs -->
     <div class="flex border-b border-neutral-200 dark:border-neutral-800 gap-6">
@@ -730,6 +734,8 @@ import {
   type ParsedShiftSlot
 } from '@@/shared/utils/proctor-schedule-parser'
 
+import { getConfiguredCbtfSeatCount } from '@@/shared/utils/cbtf-capacity'
+
 definePageMeta({
   middleware: ['admin-only']
 })
@@ -757,6 +763,8 @@ const {
   updateReservation
 } = useCbtfAdmin()
 
+const configuredTotalSeats = computed(() => getConfiguredCbtfSeatCount(facilities.value))
+
 const tabs = [
   { id: 'facility', label: 'Facility Settings', icon: 'i-lucide-sliders' },
   { id: 'hours', label: 'Operating Hours', icon: 'i-lucide-clock' },
@@ -773,7 +781,7 @@ const creatingFacility = ref(false)
 const deletingFacility = ref(false)
 const facilityForm = reactive({
   name: '',
-  totalSeats: 48,
+  totalSeats: undefined as number | undefined,
   seatAllocationOrderStr: '',
   checkInLeadMinutes: 5,
   checkInGraceMinutes: 15,
@@ -788,14 +796,14 @@ const parsedSeatsCount = computed(() => {
 })
 
 const resetSeatOrder = () => {
-  const seats = Array.from({ length: facilityForm.totalSeats }, (_, i) => i + 1)
+  const seats = Array.from({ length: facilityForm.totalSeats ?? 0 }, (_, i) => i + 1)
   facilityForm.seatAllocationOrderStr = seats.join(', ')
 }
 
 const syncFacilityForm = (fac: any) => {
   if (fac) {
     facilityForm.name = fac.name || ''
-    facilityForm.totalSeats = fac.totalSeats || 48
+    facilityForm.totalSeats = fac.totalSeats
     facilityForm.checkInLeadMinutes = fac.checkInLeadMinutes ?? 5
     facilityForm.checkInGraceMinutes = fac.checkInGraceMinutes ?? 15
     facilityForm.timezone = fac.timezone || 'America/New_York'
@@ -804,7 +812,7 @@ const syncFacilityForm = (fac: any) => {
   } else {
     Object.assign(facilityForm, {
       name: '',
-      totalSeats: 48,
+      totalSeats: undefined,
       seatAllocationOrderStr: '',
       checkInLeadMinutes: 5,
       checkInGraceMinutes: 15,
@@ -825,7 +833,6 @@ const startFacilityCreate = () => {
   creatingFacility.value = true
   activeTab.value = 'facility'
   syncFacilityForm(null)
-  resetSeatOrder()
 }
 
 const cancelFacilityCreate = () => {
@@ -852,6 +859,10 @@ const handleSaveFacility = async () => {
       .split(',')
       .map((s) => Number(s.trim()))
       .filter((n) => !isNaN(n) && n > 0)
+    const existingOrder = Array.isArray(facility.value?.seatAllocationOrder)
+      ? facility.value.seatAllocationOrder.join(', ')
+      : ''
+    const orderChanged = creatingFacility.value || order.join(', ') !== existingOrder
 
     await saveFacility(
       {
@@ -860,7 +871,7 @@ const handleSaveFacility = async () => {
         checkInLeadMinutes: facilityForm.checkInLeadMinutes,
         checkInGraceMinutes: facilityForm.checkInGraceMinutes,
         timezone: facilityForm.timezone,
-        seatAllocationOrder: order.length > 0 ? order : undefined
+        seatAllocationOrder: orderChanged && order.length > 0 ? order : undefined
       },
       creatingFacility.value
     )

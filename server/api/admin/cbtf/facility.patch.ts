@@ -3,6 +3,7 @@ import { z } from 'zod'
 import prisma from '@@/server/utils/db'
 import { updateFacilityInputSchema } from '@@/shared/schemas/cbtf.schema'
 import type { ApiResponse } from '@@/shared/types/api'
+import { getFacilitySeatAllocationOrder } from '@@/server/utils/cbtf'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   const session = await getUserSession(event)
@@ -43,9 +44,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
 
   if (validation.data.seatAllocationOrder !== undefined) {
     data.seatAllocationOrder = validation.data.seatAllocationOrder
-  } else if (validation.data.totalSeats !== undefined) {
-    // If total seats was changed without custom order, reset to 1..totalSeats
-    data.seatAllocationOrder = Array.from({ length: validation.data.totalSeats }, (_, i) => i + 1)
+  } else if (validation.data.totalSeats !== undefined && validation.data.totalSeats !== facility.totalSeats) {
+    const order = new Set(getFacilitySeatAllocationOrder(facility).slice(0, validation.data.totalSeats))
+    for (let seat = 1; order.size < validation.data.totalSeats; seat++) {
+      order.add(seat)
+    }
+    data.seatAllocationOrder = [...order]
   }
 
   if (validation.data.checkInLeadMinutes !== undefined) {

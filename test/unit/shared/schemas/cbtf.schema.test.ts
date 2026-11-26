@@ -189,6 +189,7 @@ describe('CBTF Shared Schemas', () => {
     it('validates reservation row projection', () => {
       const row = {
         id: 'res-1',
+        facilityId: 'fac-1',
         assignmentId: 'asg-1',
         assignmentTitle: 'Midterm 1',
         userId: 'usr-1',
@@ -210,6 +211,7 @@ describe('CBTF Shared Schemas', () => {
     it('validates reservation row with CHECKED_OUT status', () => {
       const row = {
         id: 'res-2',
+        facilityId: 'fac-1',
         assignmentId: 'asg-1',
         assignmentTitle: 'Midterm 1',
         userId: 'usr-2',
