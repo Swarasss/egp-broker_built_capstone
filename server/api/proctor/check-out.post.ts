@@ -22,11 +22,16 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const studentId = body?.studentId
-  if (studentId !== undefined && (typeof studentId !== 'string' || !studentId.trim())) {
-    throw createError({ statusCode: 400, statusMessage: 'Invalid student ID' })
+  if (typeof studentId !== 'string' || !studentId.trim()) {
+    throw createError({ statusCode: 400, statusMessage: 'Student ID is required' })
   }
 
-  const updated = await checkOutReservation(prisma as any, reservationId, session.user.id, studentId?.trim())
+  const updated = await checkOutReservation(
+    prisma as any,
+    reservationId,
+    session.user.id,
+    studentId.trim()
+  )
 
   return {
     statusCode: 200,

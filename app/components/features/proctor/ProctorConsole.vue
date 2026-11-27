@@ -323,7 +323,7 @@
 
             <p class="text-xs text-neutral-500">
               Swipe student ID card or manually type ID and press Enter. Supports magnetic stripe
-              readers and barcode scanners.
+              readers and barcode scanners. In live mode, use this lookup before checking in or out.
             </p>
 
             <form @submit.prevent="handleSwipeSubmit">
@@ -698,6 +698,7 @@
 import { ref, computed, onMounted, onUnmounted, nextTick, h, resolveComponent, watch } from 'vue'
 import { DEFAULT_CBTF_TIMEZONE, getLocalTimeParts } from '@@/shared/utils/timezone'
 import FeaturesCbtfWorkstationsPanel from '~/components/features/cbtf/CbtfWorkstationsPanel.vue'
+import { parseCardSwipe } from '~/utils/cardSwipe'
 
 const props = withDefaults(
   defineProps<{
@@ -790,6 +791,7 @@ watch(lastAction, (action) => {
 
 const activeFeedTab = ref('arriving')
 const rawSwipeInput = ref('')
+const verifiedInputId = ref('')
 const swipeInputRef = ref<any>(null)
 
 // Live Digital Clock
@@ -814,6 +816,7 @@ onUnmounted(() => {
 
 const clearAndRefocus = () => {
   props.proctorState.clearLookup()
+  verifiedInputId.value = ''
   rawSwipeInput.value = ''
   nextTick(() => {
     swipeInputRef.value?.$el?.querySelector('input')?.focus()
@@ -821,28 +824,58 @@ const clearAndRefocus = () => {
 }
 
 watch(rawSwipeInput, (input) => {
-  if (input) props.proctorState.clearLookup()
+  if (input) {
+    verifiedInputId.value = ''
+    props.proctorState.clearLookup()
+  }
 })
 
 const handleSwipeSubmit = async () => {
   if (!rawSwipeInput.value.trim() || lookupLoading.value) return
+
   const input = rawSwipeInput.value
   rawSwipeInput.value = ''
+  verifiedInputId.value = parseCardSwipe(input)
+
   await props.proctorState.lookupStudent(input)
 }
 
 const handleCheckInConfirm = async () => {
   const result = lookupResult.value
+
   if (rawSwipeInput.value || lookupLoading.value || !result?.reservation?.id) return
-  await props.proctorState.confirmCheckIn(result.reservation.id, result.student?.studentId)
-  clearAndRefocus()
+
+  const studentId = props.isTraining
+    ? result.student?.studentId
+    : verifiedInputId.value
+
+  if (!props.isTraining && !studentId) return
+
+  try {
+    await props.proctorState.confirmCheckIn(result.reservation.id, studentId)
+    clearAndRefocus()
+  } catch {
+    // Keep the verification card available for retry.
+  }
 }
 
 const handleCheckOutConfirm = async () => {
   const result = lookupResult.value
+
   if (rawSwipeInput.value || lookupLoading.value || !result?.reservation?.id) return
-  await props.proctorState.confirmCheckOut(result.reservation.id, result.student?.studentId)
-  clearAndRefocus()
+
+  const studentId = props.isTraining
+    ? result.student?.studentId
+    : verifiedInputId.value
+
+  if (!props.isTraining && !studentId) return
+
+  try {
+    await props.proctorState.confirmCheckOut(result.reservation.id, studentId)
+    clearAndRefocus()
+  } catch {
+    // Keep the verification card available for retry.
+  }
 }
 
 const handleNoteModalUpdate = (val: boolean) => {
@@ -985,7 +1018,13 @@ const seatedColumns: any[] = [
           variant: 'soft',
           icon: 'i-lucide-log-out',
           label: 'Check Out',
-          onClick: () => props.proctorState.confirmCheckOut(row.original.id)
+          disabled: !props.isTraining,
+          title: props.isTraining ? 'Skip Scan (Practice)' : 'Scan or enter Student ID first',
+          onClick: () => {
+            if (props.isTraining) {
+              return props.proctorState.confirmCheckOut(row.original.id)
+            }
+          }
         })
       ])
   }
@@ -1048,7 +1087,13 @@ const arrivingColumns: any[] = [
           variant: 'soft',
           icon: 'i-lucide-check',
           label: 'Check In',
-          onClick: () => props.proctorState.confirmCheckIn(row.original.id)
+          disabled: !props.isTraining,
+          title: props.isTraining ? 'Skip Scan (Practice)' : 'Scan or enter Student ID first',
+          onClick: () => {
+            if (props.isTraining) {
+              return props.proctorState.confirmCheckIn(row.original.id)
+            }
+          }
         })
       ])
   }

@@ -516,6 +516,13 @@ describe('API: Proctor Operations Endpoints', () => {
   })
 
   describe('Check-In & Check-Out Execution', () => {
+    it.each([checkInPost, checkOutPost])('rejects missing student ID', async (handler) => {
+      await expect(
+        handler(mockEvent('PROCTOR', {}, { reservationId: 'res-1' }))
+      ).rejects.toMatchObject({ statusCode: 400 })
+
+      expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+    })
     it.each(['fac-a', 'fac-b'])(
       'checks in reservation and records proctor user ID at %s',
       async (facilityId) => {
@@ -541,7 +548,14 @@ describe('API: Proctor Operations Endpoints', () => {
           user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
         } as any)
 
-        const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
+        const event = mockEvent(
+          'PROCTOR',
+          {},
+          {
+            reservationId: 'res-1',
+            studentId: '906000001'
+          }
+        )
         const res = await checkInPost(event)
 
         expect(res.statusCode).toBe(200)
@@ -595,7 +609,16 @@ describe('API: Proctor Operations Endpoints', () => {
       vi.mocked(prisma.cbtfSeatStatus.findUnique).mockResolvedValue({ isDisabled: true } as any)
 
       await expect(
-        checkInPost(mockEvent('PROCTOR', {}, { reservationId: 'res-1' }))
+        checkInPost(
+          mockEvent(
+            'PROCTOR',
+            {},
+            {
+              reservationId: 'res-1',
+              studentId: '906000001'
+            }
+          )
+        )
       ).rejects.toThrow('Move the student to another seat before checking in')
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
@@ -647,7 +670,14 @@ describe('API: Proctor Operations Endpoints', () => {
           user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
         } as any)
 
-        const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
+        const event = mockEvent(
+          'PROCTOR',
+          {},
+          {
+            reservationId: 'res-1',
+            studentId: '906000001'
+          }
+        )
         const res = await checkOutPost(event)
 
         expect(res.statusCode).toBe(200)
