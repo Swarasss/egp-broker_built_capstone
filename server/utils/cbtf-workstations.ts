@@ -2,16 +2,19 @@ import { createError } from 'h3'
 import type { Prisma, PrismaClient } from '@prisma/client'
 import {
   computeSpareSeatNumbers,
+  getAllocatableSeatNumbers,
   getDisabledSeatNumbers,
   getRecommendedSpareSeatCount,
   getSeatCapacityCounts,
   getSeatOrder,
-  getSpareSeatNumbers
+  getSpareSeatNumbers,
+  getWorkingSeatNumbers
 } from '@@/shared/utils/cbtf-seats'
 import { isSeatEligibleForStudent, toCbtfReservationDto } from './cbtf'
 import type {
   CbtfAtRiskReservationDto,
   CbtfReservationDto,
+  CbtfSeatOccupancyDto,
   CbtfSeatState,
   CbtfSeatStatusDto,
   CbtfWorkstationCounts,
@@ -115,15 +118,37 @@ function toAtRisk(reservation: WorkstationReservation): CbtfAtRiskReservationDto
   }
 }
 
-function pickSpareSeat(args: {
+/**
+ * Candidate seats for moving a student, in priority order:
+ * spare seats first (kept open for this purpose), then any other working
+ * (in-service, non-spare) seat. The current seat and out-of-service seats are excluded.
+ */
+function getMoveCandidates(
+  facility: WorkstationFacility,
+  disabledSeatNumbers: number[],
+  currentSeatNumber: number
+): number[] {
+  const spares = getSpareSeatNumbers(facility, disabledSeatNumbers)
+  const allocatable = getAllocatableSeatNumbers(facility, disabledSeatNumbers)
+  const seen = new Set<number>([currentSeatNumber])
+  const candidates: number[] = []
+  for (const seat of [...spares, ...allocatable]) {
+    if (seen.has(seat)) continue
+    seen.add(seat)
+    candidates.push(seat)
+  }
+  return candidates
+}
+
+function pickTargetSeat(args: {
   reservation: WorkstationReservation
-  spares: number[]
+  candidates: number[]
   propertiesBySeat: Map<number, string[]>
   requiredProperties: string[]
   reservations: WorkstationReservation[]
 }): number | null {
-  const { reservation, spares, propertiesBySeat, requiredProperties, reservations } = args
-  for (const seat of spares) {
+  const { reservation, candidates, propertiesBySeat, requiredProperties, reservations } = args
+  for (const seat of candidates) {
     if (seat === reservation.seatNumber) continue
     if (!isSeatEligibleForStudent(propertiesBySeat.get(seat) ?? [], requiredProperties)) continue
     const occupied = reservations.some(
@@ -148,7 +173,7 @@ export async function getWorkstationSummary(
   const facility = await loadFacility(db, facilityId)
   const statuses = facility.seatStatuses ?? []
   const disabled = getDisabledSeatNumbers(statuses, facility.totalSeats)
-  const liveReservations: Array<{ seatNumber: number }> = await (
+  const liveReservations: WorkstationReservation[] = await (
     db as any
   ).cbtfReservation.findMany({
     where: {
@@ -157,7 +182,10 @@ export async function getWorkstationSummary(
       startTime: { lte: now },
       endTime: { gt: now }
     },
-    select: { seatNumber: true }
+    include: {
+      user: { select: { firstName: true, lastName: true } },
+      assignment: { select: { title: true } }
+    }
   })
   const atRiskRows: WorkstationReservation[] =
     disabled.length > 0
@@ -183,14 +211,36 @@ export async function getWorkstationSummary(
   const spares = getSpareSeatNumbers(facility, disabled)
   const disabledSet = new Set(disabled)
   const spareSet = new Set(spares)
+  const occupancyBySeat = new Map<number, WorkstationReservation>()
+  for (const reservation of liveReservations) {
+    occupancyBySeat.set(reservation.seatNumber, reservation)
+  }
   const statusBySeat = new Map(statuses.map((status) => [status.seatNumber, status]))
+  const propertiesBySeat = new Map<number, string[]>(
+    (facility.seats ?? []).map((seat) => [seat.seatNumber, seat.properties])
+  )
   const seats: CbtfSeatStatusDto[] = getSeatOrder(facility).map((seatNumber) => {
     const status = statusBySeat.get(seatNumber)
+    const current = occupancyBySeat.get(seatNumber)
     return {
       seatNumber,
       state: seatState(seatNumber, disabledSet, spareSet),
       reason: status?.reason ?? null,
-      disabledAt: toIso(status?.disabledAt)
+      disabledAt: toIso(status?.disabledAt),
+      properties: propertiesBySeat.get(seatNumber) ?? [],
+      occupied: Boolean(current),
+      currentReservation: current
+        ? {
+            reservationId: current.id,
+            studentName: current.user
+              ? `${current.user.firstName} ${current.user.lastName}`.trim()
+              : '',
+            assignmentTitle: current.assignment?.title ?? '',
+            startTime: toIso(current.startTime) ?? '',
+            endTime: toIso(current.endTime) ?? '',
+            status: current.status as CbtfSeatOccupancyDto['status']
+          }
+        : null
     }
   })
   const workstationCounts: CbtfWorkstationCounts = {
@@ -215,10 +265,8 @@ export async function getWorkstationSummary(
 }
 
 /**
- * Takes a workstation out of service. Reservations that are in progress or
- * starting within the facility's reassign threshold are moved to a spare seat
- * (same facility, accommodation-eligible, free for the whole interval).
- * Remaining reservations are returned as "at risk" for staff to handle later.
+ * Takes a workstation out of service. Existing reservations on the seat are
+ * returned as "at risk"; staff move them explicitly from the at-risk list.
  */
 export async function takeSeatOutOfService(
   db: Db,
@@ -254,17 +302,6 @@ export async function takeSeatOutOfService(
     }
   })
 
-  const statuses: WorkstationFacility['seatStatuses'] = await (db as any).cbtfSeatStatus.findMany({
-    where: { facilityId: facility.id },
-    select: { seatNumber: true, isDisabled: true, reason: true, disabledAt: true }
-  })
-  const disabled = getDisabledSeatNumbers(statuses, facility.totalSeats)
-  const spares = getSpareSeatNumbers(facility, disabled)
-  const thresholdMs = (facility.reassignThresholdMinutes ?? 60) * 60_000
-  const propertiesBySeat = new Map<number, string[]>(
-    (facility.seats ?? []).map((seat) => [seat.seatNumber, seat.properties])
-  )
-
   const affected: WorkstationReservation[] = await (db as any).cbtfReservation.findMany({
     where: {
       facilityId: facility.id,
@@ -279,77 +316,10 @@ export async function takeSeatOutOfService(
     orderBy: { startTime: 'asc' }
   })
 
-  const accommodations: Array<{ userId: string; requiredSeatProperties: string[] }> =
-    affected.length > 0
-      ? await (db as any).cbtfStudentAccommodation.findMany({
-          where: {
-            userId: { in: affected.map((reservation) => reservation.userId) },
-            isActive: true
-          },
-          select: { userId: true, requiredSeatProperties: true }
-        })
-      : []
-  const requiredByUser = new Map(
-    accommodations.map((accommodation) => [
-      accommodation.userId,
-      accommodation.requiredSeatProperties
-    ])
-  )
-  const facilityReservations: WorkstationReservation[] = await (db as any).cbtfReservation.findMany(
-    {
-      where: { facilityId: facility.id, status: { in: ['SCHEDULED', 'CHECKED_IN'] } },
-      select: {
-        id: true,
-        seatNumber: true,
-        startTime: true,
-        endTime: true,
-        userId: true,
-        facilityId: true,
-        status: true
-      }
-    }
-  )
-
-  const moved: MovedReservation[] = []
-  const atRisk: CbtfAtRiskReservationDto[] = []
-
-  for (const reservation of affected) {
-    const requiredProperties = requiredByUser.get(reservation.userId) ?? []
-    const urgent =
-      reservation.status === 'CHECKED_IN' ||
-      new Date(reservation.startTime).getTime() <= now.getTime() + thresholdMs
-    const target = urgent
-      ? pickSpareSeat({
-          reservation,
-          spares,
-          propertiesBySeat,
-          requiredProperties,
-          reservations: facilityReservations
-        })
-      : null
-
-    if (target == null) {
-      atRisk.push(toAtRisk(reservation))
-      continue
-    }
-
-    await (db as any).cbtfReservation.update({
-      where: { id: reservation.id },
-      data: { seatNumber: target }
-    })
-    await (db as any).cbtfReservationNote.create({
-      data: {
-        reservationId: reservation.id,
-        authorId: params.userId,
-        content: `Seat changed from ${params.seatNumber} to ${target}: workstation ${params.seatNumber} taken out of service.`
-      }
-    })
-    facilityReservations.push({ ...reservation, seatNumber: target })
-    moved.push({ reservationId: reservation.id, fromSeat: params.seatNumber, toSeat: target })
-  }
+  const atRisk: CbtfAtRiskReservationDto[] = affected.map(toAtRisk)
 
   const summary = await getWorkstationSummary(db, facility.id, now)
-  return { summary, moved, atRisk }
+  return { summary, moved: [], atRisk }
 }
 
 /** Returns a workstation to service. Already-in-service seats are a no-op. */
@@ -397,7 +367,9 @@ export async function configureSpareSeats(
 }
 
 /**
- * Moves a reservation to a spare seat in the same facility.
+ * Moves a reservation to another seat in the same facility.
+ * Spare seats are preferred; any free in-service seat that meets the
+ * student's accommodation may be used as a fallback.
  * Mid-exam (CHECKED_IN) reservations are allowed.
  */
 export async function moveReservationToSeat(
@@ -428,7 +400,8 @@ export async function moveReservationToSeat(
   }
 
   const disabled = getDisabledSeatNumbers(facility.seatStatuses, facility.totalSeats)
-  const spares = getSpareSeatNumbers(facility, disabled)
+  const candidates = getMoveCandidates(facility, disabled, reservation.seatNumber)
+  const workingSeats = new Set(getWorkingSeatNumbers(facility, disabled))
   const accommodation = await (db as any).cbtfStudentAccommodation.findUnique({
     where: { userId: reservation.userId },
     select: { requiredSeatProperties: true, isActive: true }
@@ -460,8 +433,8 @@ export async function moveReservationToSeat(
   let target: number | null = null
   if (params.targetSeatNumber !== undefined) {
     const candidate = params.targetSeatNumber
-    if (!spares.includes(candidate)) {
-      throw createError({ statusCode: 400, statusMessage: 'Target seat is not a spare seat' })
+    if (!workingSeats.has(candidate)) {
+      throw createError({ statusCode: 400, statusMessage: 'Target seat is out of service' })
     }
     if (!isSeatEligibleForStudent(propertiesBySeat.get(candidate) ?? [], requiredProperties)) {
       throw createError({
@@ -479,9 +452,9 @@ export async function moveReservationToSeat(
     }
     target = candidate
   } else {
-    target = pickSpareSeat({
+    target = pickTargetSeat({
       reservation,
-      spares,
+      candidates,
       propertiesBySeat,
       requiredProperties,
       reservations: others
@@ -489,7 +462,7 @@ export async function moveReservationToSeat(
     if (target == null) {
       throw createError({
         statusCode: 409,
-        statusMessage: 'No spare seat is available for this time'
+        statusMessage: 'No other seat is available for this time'
       })
     }
   }

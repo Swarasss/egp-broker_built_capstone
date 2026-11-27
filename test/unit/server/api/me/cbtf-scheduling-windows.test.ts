@@ -205,7 +205,7 @@ describe('CBTF exam dates versus reservation action dates', () => {
 
     const order = [1, 12, ...Array.from({ length: 10 }, (_, i) => i + 2)]
     const created = await facilityPost(admin({
-      name: 'Center B', totalSeats: 12, timezone: 'America/New_York', seatAllocationOrder: order
+      name: 'Center B', totalSeats: 12, timezone: 'America/New_York', seatAllocationOrder: order, spareSeatCount: 0
     }))
     expect(created.data.timezone).toBe('America/New_York')
     expect(await read()).toMatchObject({ configuredTotalSeats: 13, hourlySlots: [] })
@@ -225,7 +225,7 @@ describe('CBTF exam dates versus reservation action dates', () => {
     expect((await read()).hourlySlots.some(slot => slot.startTime === start)).toBe(false)
     await expect(reservationsPost(request)).rejects.toMatchObject({ statusCode: 409 })
 
-    const resized = await facilityPatch(admin({ facilityId: 'b', totalSeats: 13 }))
+    const resized = await facilityPatch(admin({ facilityId: 'b', totalSeats: 13, spareSeatCount: 0 }))
     expect(resized.data.seatAllocationOrder).toEqual([...order, 13])
     expect(await read()).toMatchObject({ configuredTotalSeats: 14 })
     expect((await read()).hourlySlots.some(slot => slot.startTime === start)).toBe(true)

@@ -212,11 +212,11 @@ export function useCbtfProctor() {
         method: 'POST',
         body: {}
       })
-      toast.add({ title: 'Student moved to a spare seat', color: 'success' })
+      toast.add({ title: 'Student moved to another seat', color: 'success' })
       await refreshFeed()
     } catch (err: any) {
       toast.add({
-        title: 'Could not move student to a spare seat',
+        title: 'Could not move student to another seat',
         description: err.data?.statusMessage || err.data?.message || err.message,
         color: 'error'
       })

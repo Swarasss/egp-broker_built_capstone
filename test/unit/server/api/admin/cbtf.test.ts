@@ -168,7 +168,13 @@ describe('API: Admin CBTF Endpoints', () => {
       const result = await facilityPost(mockEvent('ADMIN', { name: 'Room Two', totalSeats: 3 }))
       expect(result).toMatchObject({ statusCode: 201, data: { id: 'fac-new' } })
       expect(prisma.cbtfFacility.create).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({ name: 'Room Two', totalSeats: 3, seatAllocationOrder: [1, 2, 3] })
+        data: expect.objectContaining({
+          name: 'Room Two',
+          totalSeats: 3,
+          seatAllocationOrder: [1, 2, 3],
+          spareSeatCount: 1,
+          spareSeatNumbers: [3]
+        })
       }))
     })
 
@@ -188,6 +194,39 @@ describe('API: Admin CBTF Endpoints', () => {
       vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(null)
       await expect(facilityPatch(mockEvent('ADMIN', { facilityId: 'missing', name: 'Room' })))
         .rejects.toMatchObject({ statusCode: 404 })
+    })
+
+    it('recomputes spare seats when capacity changes', async () => {
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+        id: 'fac-1',
+        name: 'Room',
+        totalSeats: 48,
+        seatAllocationOrder: Array.from({ length: 48 }, (_, index) => index + 1),
+        spareSeatCount: 5,
+        spareSeatNumbers: [44, 45, 46, 47, 48],
+        checkInLeadMinutes: 5,
+        checkInGraceMinutes: 15,
+        timezone: 'America/New_York',
+        reassignThresholdMinutes: 60,
+        createdAt: new Date(),
+        updatedAt: new Date()
+      } as any)
+      vi.mocked(prisma.cbtfFacility.update).mockImplementation(
+        async ({ data }: any) => ({ id: 'fac-1', ...data }) as any
+      )
+
+      const result = await facilityPatch(mockEvent('ADMIN', { facilityId: 'fac-1', totalSeats: 17 }))
+
+      expect(result.statusCode).toBe(200)
+      expect(prisma.cbtfFacility.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            totalSeats: 17,
+            spareSeatCount: 2,
+            spareSeatNumbers: [16, 17]
+          })
+        })
+      )
     })
 
     const prepareDeletion = (exists = true, reservations = 0, shifts = 0) => {

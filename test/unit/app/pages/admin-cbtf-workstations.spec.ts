@@ -35,7 +35,20 @@ function makeSummary() {
         seatNumber,
         state,
         reason: seatNumber === 5 ? 'Monitor broken' : null,
-        disabledAt: seatNumber === 5 ? '2030-01-01T09:00:00.000Z' : null
+        disabledAt: seatNumber === 5 ? '2030-01-01T09:00:00.000Z' : null,
+        properties: seatNumber === 1 ? ['SSD'] : [],
+        occupied: seatNumber === 1,
+        currentReservation:
+          seatNumber === 1
+            ? {
+                reservationId: 'live-1',
+                studentName: 'Sam Accommodated',
+                assignmentTitle: 'Exam',
+                startTime: '2030-01-01T09:30:00.000Z',
+                endTime: '2030-01-01T10:30:00.000Z',
+                status: 'CHECKED_IN'
+              }
+            : null
       }
     }),
     atRisk: [
@@ -119,16 +132,27 @@ describe('app/pages/admin/cbtf-workstations.vue', () => {
     const brokenSeat = wrapper.find('[aria-label="Seat 5: Out of service"]')
     expect(brokenSeat.exists()).toBe(true)
     expect(wrapper.find('[aria-label="Seat 19: Spare seat"]').exists()).toBe(true)
-    expect(wrapper.find('[aria-label="Seat 1: In service"]').exists()).toBe(true)
+    expect(wrapper.find('[aria-label="Seat 1: In service, SSD, in use"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('SSD Accommodations')
   })
 
   it('offers return-to-service for an out-of-service seat', async () => {
     const wrapper = await mountPage()
 
-    await wrapper.find('[aria-label="Seat 5: Out of service"]').trigger('click')
+    const seat5 = wrapper.find('[aria-label="Seat 5: Out of service"]')
+    await seat5.trigger('click')
+    expect(seat5.classes()).toContain('bg-red-50')
+    expect(seat5.classes()).toContain('ring-2')
     expect(wrapper.text()).toContain('Seat 5 — Out of service')
     expect(wrapper.text()).toContain('Reason: Monitor broken')
     expect(wrapper.text()).toContain('Return to service')
+  })
+
+  it('shows who is currently using a seat', async () => {
+    const wrapper = await mountPage()
+
+    await wrapper.find('[aria-label="Seat 1: In service, SSD, in use"]').trigger('click')
+    expect(wrapper.text()).toContain('In use by Sam Accommodated')
   })
 
   it('lists at-risk reservations and moves them to a spare seat', async () => {
@@ -139,7 +163,7 @@ describe('app/pages/admin/cbtf-workstations.vue', () => {
 
     const moveButton = wrapper
       .findAll('button')
-      .find((button) => button.text().includes('Move to spare'))
+      .find((button) => button.text().includes('Move to another seat'))
     expect(moveButton).toBeDefined()
 
     mockFetch.mockResolvedValueOnce({ statusCode: 200, data: { id: 'risk-1' } })

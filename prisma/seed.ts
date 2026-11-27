@@ -1,4 +1,8 @@
 import { PrismaClient, type User } from '@prisma/client'
+import {
+  computeSpareSeatNumbers,
+  getRecommendedSpareSeatCount
+} from '../shared/utils/cbtf-seats'
 
 const prisma = new PrismaClient()
 
@@ -53,6 +57,7 @@ async function main() {
 
   // Clean up existing data
   await prisma.cbtfReservation.deleteMany()
+  await prisma.cbtfSeatStatus.deleteMany()
   await prisma.cbtfProctorShift.deleteMany()
   await prisma.cbtfScheduleException.deleteMany()
   await prisma.cbtfOperatingHours.deleteMany()
@@ -240,6 +245,7 @@ async function main() {
         dueDate: new Date(now.getTime() + oneDay), // Tomorrow
         acceptUntil: new Date(now.getTime() + oneDay),
         isSchedulable: true,
+        cbtfDurationMinutes: 60,
         scheduleWindowStart: new Date(now.getTime() - oneDay),
         scheduleWindowEnd: new Date(now.getTime() + 10 * oneDay)
       },
@@ -271,11 +277,19 @@ async function main() {
 
   // Create Default CBTF Testing Facility
   const seatOrder = Array.from({ length: 48 }, (_, i) => i + 1)
+  const spareSeatCount = getRecommendedSpareSeatCount(48)
+  const spareSeatNumbers = computeSpareSeatNumbers({
+    totalSeats: 48,
+    seatAllocationOrder: seatOrder,
+    spareSeatCount
+  })
   const facility = await prisma.cbtfFacility.create({
     data: {
       name: 'Main CBTF Facility',
       totalSeats: 48,
       seatAllocationOrder: seatOrder,
+      spareSeatCount,
+      spareSeatNumbers,
       operatingHours: {
         create: [
           { dayOfWeek: 1, openTime: '08:00', closeTime: '18:00' }, // Mon
@@ -289,7 +303,8 @@ async function main() {
         create: [
           { seatNumber: 1, properties: ['SSD'] },
           { seatNumber: 2, properties: ['SSD'] },
-          { seatNumber: 3, properties: ['SSD', 'ADJUSTABLE_DESK'] }
+          { seatNumber: 3, properties: ['SSD', 'ADJUSTABLE_DESK'] },
+          { seatNumber: 48, properties: ['SSD'] }
         ]
       }
     }
@@ -306,6 +321,66 @@ async function main() {
     }
   })
   console.log(`✅ SSD accommodation created for ${ssdStudent.email}`)
+
+  // Demo workstation scenario: one seat out of service, spare seats configured,
+  // an at-risk reservation, and a currently checked-in student.
+  const schedulableAssignment = await prisma.assignment.findFirst({
+    where: { courseId: course1.id, title: 'Variables and Loops' }
+  })
+  if (schedulableAssignment) {
+    const tomorrow = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1)
+    const atTomorrow = (hour: number, minute = 0) =>
+      new Date(tomorrow.getFullYear(), tomorrow.getMonth(), tomorrow.getDate(), hour, minute, 0)
+    const checkedInStart = new Date(Date.now() - 30 * 60 * 1000)
+
+    await prisma.cbtfSeatStatus.create({
+      data: {
+        facilityId: facility.id,
+        seatNumber: 10,
+        isDisabled: true,
+        reason: 'Demo: monitor not turning on',
+        disabledAt: new Date(),
+        updatedById: admin.id
+      }
+    })
+
+    await prisma.cbtfReservation.createMany({
+      data: [
+        {
+          facilityId: facility.id,
+          assignmentId: schedulableAssignment.id,
+          userId: demo.id,
+          seatNumber: 10,
+          startTime: atTomorrow(10),
+          endTime: atTomorrow(11),
+          status: 'SCHEDULED'
+        },
+        {
+          facilityId: facility.id,
+          assignmentId: schedulableAssignment.id,
+          userId: ssdStudent.id,
+          seatNumber: 1,
+          startTime: atTomorrow(13),
+          endTime: atTomorrow(14, 30),
+          status: 'SCHEDULED'
+        },
+        {
+          facilityId: facility.id,
+          assignmentId: schedulableAssignment.id,
+          userId: ssdStudent.id,
+          seatNumber: 2,
+          startTime: checkedInStart,
+          endTime: new Date(checkedInStart.getTime() + 90 * 60 * 1000),
+          status: 'CHECKED_IN',
+          checkedInAt: new Date(checkedInStart.getTime() + 5 * 60 * 1000),
+          checkedInByUserId: admin.id
+        }
+      ]
+    })
+    console.log(
+      '✅ Demo workstation scenario: seat 10 out of service, spare seats configured, and a checked-in student'
+    )
+  }
 
   // Display created users for reference
   console.log('\n📋 Created users:')

@@ -2,6 +2,10 @@ import { defineEventHandler, readBody, createError } from 'h3'
 import { z } from 'zod'
 import prisma from '@@/server/utils/db'
 import { updateFacilityInputSchema } from '@@/shared/schemas/cbtf.schema'
+import {
+  computeSpareSeatNumbers,
+  getRecommendedSpareSeatCount
+} from '@@/shared/utils/cbtf-seats'
 import type { ApiResponse } from '@@/shared/types/api'
 import { getFacilitySeatAllocationOrder } from '@@/server/utils/cbtf'
 
@@ -50,6 +54,39 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
       order.add(seat)
     }
     data.seatAllocationOrder = [...order]
+  }
+
+  const nextTotalSeats = (data.totalSeats as number | undefined) ?? facility.totalSeats
+  const nextSeatAllocationOrder =
+    (data.seatAllocationOrder as number[] | undefined) ?? getFacilitySeatAllocationOrder(facility)
+  const storedSpareNumbers = Array.isArray(facility.spareSeatNumbers)
+    ? (facility.spareSeatNumbers as number[])
+    : []
+  const storedSparesOutOfRange = storedSpareNumbers.some(
+    (seat) => typeof seat !== 'number' || seat < 1 || seat > nextTotalSeats
+  )
+  const capacityChanged =
+    nextTotalSeats !== facility.totalSeats || data.seatAllocationOrder !== undefined
+  const explicitSpareCount = validation.data.spareSeatCount
+  const effectiveSpareCount =
+    explicitSpareCount !== undefined
+      ? explicitSpareCount
+      : capacityChanged || storedSparesOutOfRange
+        ? getRecommendedSpareSeatCount(nextTotalSeats)
+        : (facility.spareSeatCount ?? 0)
+
+  data.spareSeatCount = effectiveSpareCount
+  data.spareSeatNumbers =
+    typeof effectiveSpareCount === 'number' && effectiveSpareCount > 0
+      ? computeSpareSeatNumbers({
+          totalSeats: nextTotalSeats,
+          seatAllocationOrder: nextSeatAllocationOrder,
+          spareSeatCount: effectiveSpareCount
+        })
+      : []
+
+  if (validation.data.reassignThresholdMinutes !== undefined) {
+    data.reassignThresholdMinutes = validation.data.reassignThresholdMinutes
   }
 
   if (validation.data.checkInLeadMinutes !== undefined) {

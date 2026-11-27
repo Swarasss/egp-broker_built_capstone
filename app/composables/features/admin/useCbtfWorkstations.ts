@@ -81,15 +81,12 @@ export function useCbtfWorkstations() {
         }
       )
       if (response.data?.summary) summary.value = response.data.summary
-      const moved = response.data?.moved.length ?? 0
       const atRisk = response.data?.atRisk.length ?? 0
       toast.add({
         title: 'Workstation out of service',
-        description: moved
-          ? `${moved} student${moved === 1 ? '' : 's'} moved to a spare seat.`
-          : atRisk
-            ? `${atRisk} reservation${atRisk === 1 ? '' : 's'} still need attention.`
-            : undefined,
+        description: atRisk
+          ? `${atRisk} reservation${atRisk === 1 ? '' : 's'} ${atRisk === 1 ? 'needs' : 'need'} attention.`
+          : undefined,
         color: 'success'
       })
       return response.data ?? null
@@ -190,12 +187,12 @@ export function useCbtfWorkstations() {
         method: 'POST',
         body: {}
       })
-      toast.add({ title: 'Student moved to a spare seat', color: 'success' })
+      toast.add({ title: 'Student moved to another seat', color: 'success' })
       await loadSummary()
       return true
     } catch (error: any) {
       toast.add({
-        title: 'Could not move student to a spare seat',
+        title: 'Could not move student to another seat',
         description: error?.data?.statusMessage || error?.statusMessage,
         color: 'error'
       })

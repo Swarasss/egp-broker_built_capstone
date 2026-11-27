@@ -269,7 +269,7 @@
       color="warning"
       variant="subtle"
       :title="`${atRiskCount} ${atRiskCount === 1 ? 'student needs' : 'students need'} a new seat`"
-      description="Their workstation is out of service. Open the Seat Problems tab to move them to a spare seat."
+      description="Their workstation is out of service. Open the Manage Seats tab to move them to another seat."
       class="mb-2"
     />
 
@@ -579,19 +579,21 @@
           </button>
 
           <button
+            v-if="!isTraining"
             type="button"
             class="pb-3 text-sm font-semibold transition-colors border-b-2 cursor-pointer flex items-center gap-2"
             :class="[
-              activeFeedTab === 'atrisk'
-                ? 'border-red-500 text-red-600 dark:text-red-400'
+              activeFeedTab === 'workstations'
+                ? 'border-primary-500 text-primary-600 dark:text-primary-400'
                 : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
             ]"
-            @click="activeFeedTab = 'atrisk'"
+            @click="activeFeedTab = 'workstations'"
           >
-            <UIcon name="i-lucide-triangle-alert" class="w-4 h-4" />
-            <span>Seat Problems</span>
+            <UIcon name="i-lucide-wrench" class="w-4 h-4" />
+            <span>Manage Seats</span>
             <span
-              class="px-1.5 py-0.5 rounded-full text-xs bg-neutral-100 dark:bg-neutral-800 font-mono"
+              v-if="atRiskCount > 0"
+              class="px-1.5 py-0.5 rounded-full text-xs bg-red-100 dark:bg-red-950/60 text-red-700 dark:text-red-300 font-mono"
             >
               {{ atRiskCount }}
             </span>
@@ -613,7 +615,11 @@
         </div>
 
         <p
-          v-if="activeFeedTab !== 'reservations' && liveRosterLoading"
+          v-if="
+            activeFeedTab !== 'reservations' &&
+            activeFeedTab !== 'workstations' &&
+            liveRosterLoading
+          "
           class="py-12 text-center text-neutral-500"
           role="status"
         >
@@ -650,13 +656,15 @@
           />
         </div>
 
-        <!-- Tab 4: Seat Problems (out-of-service workstation needs a spare seat) -->
-        <div v-else-if="liveRosterReady && activeFeedTab === 'atrisk'">
-          <BaseDataTable
-            :data="atRiskRoster"
-            :columns="atRiskColumns"
-            empty-icon="i-lucide-armchair"
-            empty-text="No students need a new seat right now."
+        <!-- Tab 4: Manage Seats (take a workstation out of / return to service) -->
+        <div v-else-if="activeFeedTab === 'workstations'">
+          <FeaturesCbtfWorkstationsPanel
+            :facility-id="selectedFacilityId || undefined"
+            :facilities="facilities"
+            :can-manage-spares="false"
+            :show-facility-picker="false"
+            :show-certification-note="false"
+            @changed="proctorState.refreshFeed?.()"
           />
         </div>
 
@@ -689,6 +697,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, h, resolveComponent, watch } from 'vue'
 import { DEFAULT_CBTF_TIMEZONE, getLocalTimeParts } from '@@/shared/utils/timezone'
+import FeaturesCbtfWorkstationsPanel from '~/components/features/cbtf/CbtfWorkstationsPanel.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -1110,39 +1119,4 @@ const departureColumns: any[] = [
   }
 ]
 
-const atRiskColumns: any[] = [
-  {
-    accessorKey: 'seatNumber',
-    header: 'Seat',
-    cell: ({ row }: { row: any }) =>
-      h(
-        'span',
-        {
-          class:
-            'px-2 py-1 rounded bg-red-100 dark:bg-red-950/60 font-mono font-bold text-red-700 dark:text-red-300'
-        },
-        seatLabel(row.original)
-      )
-  },
-  studentColumn,
-  assignmentColumn,
-  {
-    accessorKey: 'startTime',
-    header: 'Scheduled Slot',
-    cell: ({ row }: { row: any }) => formatRosterTime(row.original.startTime)
-  },
-  {
-    id: 'actions',
-    header: 'Action',
-    cell: ({ row }: { row: any }) =>
-      h(resolveComponent('UButton'), {
-        size: 'xs',
-        color: 'error',
-        variant: 'soft',
-        icon: 'i-lucide-arrow-right-left',
-        label: 'Move to spare seat',
-        onClick: () => props.proctorState.moveToSpare?.(row.original.id)
-      })
-  }
-]
 </script>

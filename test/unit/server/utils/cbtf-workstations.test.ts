@@ -201,7 +201,17 @@ describe('CBTF workstations', () => {
   it('summarizes seat states, capacity, and at-risk reservations', async () => {
     const store = createStore({
       seatStatuses: [{ seatNumber: 5, isDisabled: true, reason: 'broken', disabledAt: at(-1) }],
+      seats: [{ seatNumber: 1, properties: ['SSD'] }],
       reservations: [
+        {
+          id: 'live-1',
+          userId: 'u1',
+          assignmentId: 'a1',
+          seatNumber: 1,
+          status: 'CHECKED_IN',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
         {
           id: 'risk-1',
           userId: 'u1',
@@ -228,6 +238,15 @@ describe('CBTF workstations', () => {
     expect(summary.seats.find((seat) => seat.seatNumber === 5)?.state).toBe('OUT_OF_SERVICE')
     expect(summary.seats.find((seat) => seat.seatNumber === 19)?.state).toBe('SPARE')
     expect(summary.seats.find((seat) => seat.seatNumber === 1)?.state).toBe('IN_SERVICE')
+    expect(summary.seats.find((seat) => seat.seatNumber === 1)?.properties).toEqual(['SSD'])
+    expect(summary.seats.find((seat) => seat.seatNumber === 1)?.occupied).toBe(true)
+    expect(summary.seats.find((seat) => seat.seatNumber === 1)?.currentReservation).toMatchObject({
+      reservationId: 'live-1',
+      studentName: 'Ada Student',
+      assignmentTitle: 'Exam'
+    })
+    expect(summary.seats.find((seat) => seat.seatNumber === 2)?.properties).toEqual([])
+    expect(summary.seats.find((seat) => seat.seatNumber === 2)?.occupied).toBe(false)
     expect(summary.atRisk).toHaveLength(1)
     expect(summary.atRisk[0]).toMatchObject({
       reservationId: 'risk-1',
@@ -252,7 +271,7 @@ describe('CBTF workstations', () => {
     expect(rows[1]?.seatOutOfService).toBe(false)
   })
 
-  it('takes a seat out of service, moves the in-progress student to a spare, and flags future bookings', async () => {
+  it('takes a seat out of service and flags affected reservations', async () => {
     const store = createStore({
       reservations: [
         {
@@ -287,17 +306,17 @@ describe('CBTF workstations', () => {
       now: NOW
     })
 
-    expect(result.moved).toEqual([{ reservationId: 'r1', fromSeat: 5, toSeat: 19 }])
-    expect(result.atRisk.map((row) => row.reservationId)).toEqual(['r2'])
-    expect(store.reservations.find((row) => row.id === 'r1')?.seatNumber).toBe(19)
+    expect(result.moved).toEqual([])
+    expect(result.atRisk.map((row) => row.reservationId)).toEqual(['r1', 'r2'])
+    expect(store.reservations.find((row) => row.id === 'r1')?.seatNumber).toBe(5)
     expect(store.reservations.find((row) => row.id === 'r2')?.seatNumber).toBe(5)
-    expect(store.notes).toHaveLength(1)
+    expect(store.notes).toHaveLength(0)
     expect(result.summary.counts.outOfService).toBe(1)
-    expect(result.summary.counts.spareAvailable).toBe(1)
   })
 
-  it('flags a reservation when no spare seat is available', async () => {
+  it('flags a reservation when every other seat is occupied', async () => {
     const store = createStore({
+      totalSeats: 6,
       spareSeatCount: 0,
       spareSeatNumbers: [],
       reservations: [
@@ -307,6 +326,51 @@ describe('CBTF workstations', () => {
           assignmentId: 'a1',
           seatNumber: 5,
           status: 'CHECKED_IN',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
+        {
+          id: 'r2',
+          userId: 'u2',
+          assignmentId: 'a1',
+          seatNumber: 1,
+          status: 'SCHEDULED',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
+        {
+          id: 'r3',
+          userId: 'u2',
+          assignmentId: 'a1',
+          seatNumber: 2,
+          status: 'SCHEDULED',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
+        {
+          id: 'r4',
+          userId: 'u2',
+          assignmentId: 'a1',
+          seatNumber: 3,
+          status: 'SCHEDULED',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
+        {
+          id: 'r5',
+          userId: 'u2',
+          assignmentId: 'a1',
+          seatNumber: 4,
+          status: 'SCHEDULED',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        },
+        {
+          id: 'r6',
+          userId: 'u2',
+          assignmentId: 'a1',
+          seatNumber: 6,
+          status: 'SCHEDULED',
           startTime: at(-0.5),
           endTime: at(0.5)
         }
@@ -324,6 +388,39 @@ describe('CBTF workstations', () => {
 
     expect(result.moved).toEqual([])
     expect(result.atRisk.map((row) => row.reservationId)).toEqual(['r1'])
+  })
+
+  it('lists an accommodated reservation as at risk without moving it', async () => {
+    const store = createStore({
+      spareSeatCount: 1,
+      spareSeatNumbers: [20],
+      seats: [{ seatNumber: 1, properties: ['SSD'] }],
+      accommodations: [{ userId: 'u1', requiredSeatProperties: ['SSD'], isActive: true }],
+      reservations: [
+        {
+          id: 'r1',
+          userId: 'u1',
+          assignmentId: 'a1',
+          seatNumber: 5,
+          status: 'CHECKED_IN',
+          startTime: at(-0.5),
+          endTime: at(0.5)
+        }
+      ]
+    })
+    store.users.u1 = { firstName: 'Sam', lastName: 'Accommodated' }
+    store.assignments.a1 = { title: 'Exam' }
+
+    const result = await takeSeatOutOfService(createDb(store) as any, {
+      facilityId: 'fac-1',
+      seatNumber: 5,
+      userId: 'proctor-1',
+      now: NOW
+    })
+
+    expect(result.moved).toEqual([])
+    expect(result.atRisk.map((row) => row.reservationId)).toEqual(['r1'])
+    expect(store.reservations.find((row) => row.id === 'r1')?.seatNumber).toBe(5)
   })
 
   it('returns a seat to service', async () => {
@@ -383,8 +480,9 @@ describe('CBTF workstations', () => {
     expect(store.notes).toHaveLength(1)
   })
 
-  it('rejects moving to a non-spare seat', async () => {
+  it('rejects moving to an out-of-service seat', async () => {
     const store = createStore({
+      seatStatuses: [{ seatNumber: 3, isDisabled: true }],
       reservations: [
         {
           id: 'r1',
@@ -407,10 +505,12 @@ describe('CBTF workstations', () => {
     ).rejects.toMatchObject({ statusCode: 400 })
   })
 
-  it('rejects moving when no spare seat is free', async () => {
+  it('moves to another free working seat when no spare matches the accommodation', async () => {
     const store = createStore({
       spareSeatCount: 1,
       spareSeatNumbers: [20],
+      seats: [{ seatNumber: 1, properties: ['SSD'] }],
+      accommodations: [{ userId: 'u1', requiredSeatProperties: ['SSD'], isActive: true }],
       reservations: [
         {
           id: 'r1',
@@ -420,15 +520,40 @@ describe('CBTF workstations', () => {
           status: 'SCHEDULED',
           startTime: at(1),
           endTime: at(2)
-        },
+        }
+      ]
+    })
+    store.users.u1 = {
+      firstName: 'Sam',
+      lastName: 'Accommodated',
+      email: 'sam@example.com',
+      studentId: '1',
+      avatarUrl: null
+    }
+    store.assignments.a1 = { title: 'Exam' }
+
+    const dto = await moveReservationToSeat(createDb(store) as any, {
+      reservationId: 'r1',
+      userId: 'proctor-1',
+      now: NOW
+    })
+    expect(dto.seatNumber).toBe(1)
+  })
+
+  it('rejects moving when no eligible seat is available', async () => {
+    const store = createStore({
+      spareSeatCount: 1,
+      spareSeatNumbers: [20],
+      accommodations: [{ userId: 'u1', requiredSeatProperties: ['SSD'], isActive: true }],
+      reservations: [
         {
-          id: 'r2',
-          userId: 'u2',
+          id: 'r1',
+          userId: 'u1',
           assignmentId: 'a1',
-          seatNumber: 20,
-          status: 'CHECKED_IN',
-          startTime: at(1.5),
-          endTime: at(2.5)
+          seatNumber: 5,
+          status: 'SCHEDULED',
+          startTime: at(1),
+          endTime: at(2)
         }
       ]
     })

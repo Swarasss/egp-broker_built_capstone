@@ -169,11 +169,27 @@ export interface CbtfSeatMapResponse {
 /** Service state of a physical workstation as shown to staff. */
 export type CbtfSeatState = 'IN_SERVICE' | 'OUT_OF_SERVICE' | 'SPARE'
 
+/** The reservation currently using a seat, if any. */
+export interface CbtfSeatOccupancyDto {
+  reservationId: string
+  studentName: string
+  assignmentTitle: string
+  startTime: string
+  endTime: string
+  status: CbtfReservationStatus
+}
+
 export interface CbtfSeatStatusDto {
   seatNumber: number
   state: CbtfSeatState
   reason: string | null
   disabledAt: string | null
+  /** Seat certifications such as SSD, ADJUSTABLE_DESK, SCREEN_READER. */
+  properties: string[]
+  /** True when a reservation is using this seat right now. */
+  occupied: boolean
+  /** Details of the current reservation, if any. */
+  currentReservation: CbtfSeatOccupancyDto | null
 }
 
 export interface CbtfWorkstationCounts {

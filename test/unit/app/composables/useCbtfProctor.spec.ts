@@ -86,7 +86,7 @@ describe('useCbtfProctor Composable', () => {
     })
     expect(mockRefreshFeed).toHaveBeenCalled()
     expect(mockToast.add).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Student moved to a spare seat', color: 'success' })
+      expect.objectContaining({ title: 'Student moved to another seat', color: 'success' })
     )
   })
 

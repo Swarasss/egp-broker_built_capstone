@@ -86,8 +86,19 @@ describe('useCbtfWorkstations', () => {
                 outOfService: 1
               }
             }),
-            moved: [{ reservationId: 'r1', fromSeat: 5, toSeat: 19 }],
-            atRisk: []
+            moved: [],
+            atRisk: [
+              {
+                reservationId: 'r1',
+                seatNumber: 5,
+                userId: 'u1',
+                studentName: 'Ada Student',
+                assignmentTitle: 'Exam',
+                startTime: '2030-01-01T11:00:00.000Z',
+                endTime: '2030-01-01T12:00:00.000Z',
+                status: 'SCHEDULED'
+              }
+            ]
           }
         }
       }
@@ -100,10 +111,14 @@ describe('useCbtfWorkstations', () => {
 
     const result = await composable.takeOutOfService(5, 'broken')
 
-    expect(result?.moved).toHaveLength(1)
+    expect(result?.atRisk).toHaveLength(1)
     expect(composable.summary.value?.counts.outOfService).toBe(1)
     expect(toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Workstation out of service', color: 'success' })
+      expect.objectContaining({
+        title: 'Workstation out of service',
+        description: '1 reservation needs attention.',
+        color: 'success'
+      })
     )
   })
 
@@ -131,7 +146,7 @@ describe('useCbtfWorkstations', () => {
     })
     expect(composable.movingId.value).toBeNull()
     expect(toastAdd).toHaveBeenCalledWith(
-      expect.objectContaining({ title: 'Student moved to a spare seat', color: 'success' })
+      expect.objectContaining({ title: 'Student moved to another seat', color: 'success' })
     )
   })
 })
