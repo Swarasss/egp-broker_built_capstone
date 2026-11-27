@@ -17,6 +17,7 @@ import type {
   CbtfStudentBlock,
   CbtfRecommendedDay,
   CbtfStudentStart,
+  CbtfSchedulingChoices,
   CbtfReservationDto
 } from '@@/shared/models/cbtf'
 
@@ -39,6 +40,7 @@ export interface CbtfAvailabilityResponse extends CbtfReservationWindow {
   blocks: CbtfStudentBlock[]
   recommendedDays: CbtfRecommendedDay[]
   hourlySlots: CbtfStudentStart[]
+  schedulingChoices?: CbtfSchedulingChoices
 }
 
 export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailabilityResponse>> => {
@@ -143,7 +145,8 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
         query.excludeReservationId,
         accommodation.requiredSeatProperties,
         session.user.id,
-        now
+        now,
+        query.view === 'narrowing' ? assignment.id : undefined
       )
     : {
         availabilityStatus: reservationWindowStatus === 'NOT_YET_OPEN' ? 'RESERVATION_NOT_OPEN' as const : 'RESERVATION_CLOSED' as const,

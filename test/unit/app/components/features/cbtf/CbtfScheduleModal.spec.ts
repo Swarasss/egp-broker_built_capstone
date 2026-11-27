@@ -58,7 +58,8 @@ describe('CbtfScheduleModal', () => {
     mockFetchAvailability.mockResolvedValue({
       blocks: [],
       recommendedDays: [],
-      hourlySlots: []
+      hourlySlots: [],
+      availabilityStatus: 'NO_AVAILABLE_SEATS'
     })
   })
 
@@ -95,17 +96,17 @@ describe('CbtfScheduleModal', () => {
   })
 
   it.each([false, true])('shows a compact timezone and books only the selected time (rescheduling: %s)', async (rescheduling) => {
-    const block = {
-      id: '2026-10-01-morning:America/New_York',
-      label: 'Thursday Morning',
-      dateLabel: 'Oct 1',
-      timezone: 'America/New_York'
-    }
     const startTime = '2026-10-01T13:00:00Z'
     mockFetchAvailability.mockResolvedValue({
-      blocks: [block],
-      recommendedDays: [],
-      hourlySlots: [{ startTime, endTime: '2026-10-01T14:00:00Z', formattedTime: '9:00 AM' }]
+      availabilityStatus: 'AVAILABLE',
+      schedulingChoices: {
+        morning: [{
+          date: '2026-10-01',
+          label: 'Thu, Oct 1',
+          times: [{ startTime, endTime: '2026-10-01T14:00:00Z', formattedTime: '9:00 AM', timezone: 'America/New_York' }]
+        }],
+        afternoon: []
+      }
     })
     const wrapper = mount(CbtfScheduleModal, {
       props: { open: false, assignment: mockAssignment, existingReservation: rescheduling ? mockExistingReservation : null },
@@ -116,16 +117,20 @@ describe('CbtfScheduleModal', () => {
     await wrapper.setProps({ open: true })
     if (rescheduling) await button('Reschedule Exam').trigger('click')
     await flushPromises()
-    expect(button('Thursday Morning').text()).toContain('Eastern (ET)')
-    expect(wrapper.text()).not.toContain('America/New_York')
-    await button(rescheduling ? 'Thursday Morning' : 'Next').trigger('click')
-    await flushPromises()
-    expect(mockFetchAvailability).toHaveBeenLastCalledWith(
-      mockAssignment.id, block.id, undefined, rescheduling ? mockExistingReservation.id : undefined
+    expect(wrapper.text()).toContain('Choose a time of day')
+    expect(button('Afternoon').attributes()).toHaveProperty('disabled')
+    expect(wrapper.text()).toContain('No afternoon availability')
+    expect(wrapper.text()).not.toContain('South Center')
+    expect(mockFetchAvailability).toHaveBeenCalledExactlyOnceWith(
+      mockAssignment.id, undefined, undefined, rescheduling ? mockExistingReservation.id : undefined, 'narrowing'
     )
-    expect(wrapper.text()).toContain('Times shown in Eastern (ET)')
-    expect(button('9:00 AM').text()).toBe('9:00 AM')
+    await button('Morning').trigger('click')
+    expect(wrapper.text()).toContain('Choose a day')
+    await button('Thu, Oct 1').trigger('click')
+    expect(button('9:00 AM').text()).toContain('Eastern (ET)')
+    expect(wrapper.text()).not.toContain('America/New_York')
     await button('9:00 AM').trigger('click')
+    expect(wrapper.text()).toContain('Review and confirm')
     expect(wrapper.text()).toContain('9:00 AM · Eastern (ET)')
     expect(mockCreateReservation).not.toHaveBeenCalled()
     expect(mockRescheduleReservation).not.toHaveBeenCalled()
@@ -141,6 +146,61 @@ describe('CbtfScheduleModal', () => {
     expect(wrapper.text()).toContain('Exam Confirmed!')
     expect(wrapper.text()).toContain('South Center')
     expect(wrapper.emitted('reserved')?.[0]).toEqual([result])
+  })
+
+  it('clears a previously picked time when the day or time of day changes', async () => {
+    const day = (date: string, label: string, formattedTime: string, hour: string) => ({
+      date, label,
+      times: [{ startTime: `${date}T${hour}:00:00Z`, formattedTime, timezone: 'UTC' }]
+    })
+    mockFetchAvailability.mockResolvedValue({
+      availabilityStatus: 'AVAILABLE',
+      schedulingChoices: {
+        morning: [day('2026-11-30', 'Mon, Nov 30', '9:00 AM', '09'), day('2026-11-29', 'Sun, Nov 29', '10:00 AM', '10')],
+        afternoon: [day('2026-11-30', 'Mon, Nov 30', '2:00 PM', '14')]
+      }
+    })
+    const wrapper = mount(CbtfScheduleModal, { props: { open: true, assignment: mockAssignment }, global: { stubs } })
+    await flushPromises()
+    const button = (label: string) => wrapper.findAll('button').find((candidate) => candidate.text().includes(label))!
+    const click = (label: string) => button(label).trigger('click')
+    await click('Morning')
+    await click('Mon, Nov 30')
+    await click('9:00 AM')
+    await click('Back')
+    await click('Back')
+    await click('Sun, Nov 29')
+    expect(button('Next').attributes()).toHaveProperty('disabled')
+    expect(wrapper.text()).not.toContain('9:00 AM')
+    await click('10:00 AM')
+    await click('Back')
+    await click('Back')
+    await click('Back')
+    await click('Afternoon')
+    expect(button('Next').attributes()).toHaveProperty('disabled')
+    expect(wrapper.text()).not.toContain('Sun, Nov 29')
+    await click('Mon, Nov 30')
+    expect(button('Next').attributes()).toHaveProperty('disabled')
+    expect(wrapper.text()).toContain('2:00 PM')
+    expect(wrapper.text()).not.toContain('10:00 AM')
+  })
+
+  it('explains when the chosen day has no suggested times', async () => {
+    mockFetchAvailability.mockResolvedValue({
+      availabilityStatus: 'AVAILABLE',
+      schedulingChoices: {
+        morning: [],
+        afternoon: [{ date: '2026-11-30', label: 'Mon, Nov 30', times: [] }]
+      }
+    })
+    const wrapper = mount(CbtfScheduleModal, { props: { open: true, assignment: mockAssignment }, global: { stubs } })
+    await flushPromises()
+    const button = (label: string) => wrapper.findAll('button').find((candidate) => candidate.text() === label)!
+    expect(wrapper.text()).toContain('No morning availability')
+    await button('Afternoon').trigger('click')
+    await button('Mon, Nov 30').trigger('click')
+    expect(wrapper.get('[role="status"]').text()).toContain('No suggested times are available')
+    expect(button('Next').attributes()).toHaveProperty('disabled')
   })
 
   it('shows the current reservation testing center, exam interval, and workstation', () => {
@@ -209,9 +269,10 @@ describe('CbtfScheduleModal', () => {
     const rescheduleBtn = buttons.find((b) => b.text().includes('Reschedule Exam'))
     expect(rescheduleBtn).toBeDefined()
     await rescheduleBtn!.trigger('click')
+    await flushPromises()
 
     // Expect availability was fetched
-    expect(mockFetchAvailability).toHaveBeenCalledWith('asg-cbtf-1', undefined, undefined, 'res-1')
+    expect(mockFetchAvailability).toHaveBeenCalledWith('asg-cbtf-1', undefined, undefined, 'res-1', 'narrowing')
 
     // Check reassurance banner
     expect(wrapper.text()).toContain('Current Reservation Protected')

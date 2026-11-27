@@ -146,6 +146,16 @@ export interface CbtfStudentBlock {
 
 export type CbtfStudentStart = Pick<CbtfHourlySlotChoice, 'startTime' | 'endTime' | 'formattedTime'>
 
+export type CbtfSchedulingPeriod = 'morning' | 'afternoon'
+
+export interface CbtfSchedulingDay {
+  date: string
+  label: string
+  times: (CbtfStudentStart & { timezone: string })[]
+}
+
+export type CbtfSchedulingChoices = Record<CbtfSchedulingPeriod, CbtfSchedulingDay[]>
+
 /** Certified properties for one physical seat. Empty properties = ordinary seat. */
 export interface CbtfSeatDto {
   seatNumber: number

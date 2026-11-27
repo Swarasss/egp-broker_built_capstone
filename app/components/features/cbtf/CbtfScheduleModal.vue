@@ -90,7 +90,7 @@
           class="flex items-center justify-between pb-3 border-b border-neutral-200 dark:border-neutral-800"
         >
           <div class="flex items-center gap-2">
-            <div v-for="s in [1, 2, 3]" :key="s" class="flex items-center gap-2">
+            <div v-for="s in [1, 2, 3, 4]" :key="s" class="flex items-center gap-2">
               <div
                 class="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold transition-colors"
                 :class="[
@@ -104,11 +104,11 @@
                 <UIcon v-if="currentStep > s" name="i-lucide-check" class="w-4 h-4" />
                 <span v-else>{{ s }}</span>
               </div>
-              <div v-if="s < 3" class="w-8 h-0.5 bg-neutral-200 dark:bg-neutral-800" />
+              <div v-if="s < 4" class="w-8 h-0.5 bg-neutral-200 dark:bg-neutral-800" />
             </div>
           </div>
           <span class="text-xs font-medium text-neutral-500">
-            Step {{ currentStep }} of 3: {{ stepTitle }}
+            Step {{ currentStep }} of 4: {{ stepTitle }}
           </span>
         </div>
 
@@ -118,9 +118,16 @@
           <p class="text-sm text-neutral-500">Finding available testing center slots…</p>
         </div>
 
-        <p v-else-if="availabilityMessage" role="status" class="p-6 text-center text-sm text-neutral-600 dark:text-neutral-400">
-          {{ availabilityMessage }}
-        </p>
+        <div v-else-if="availabilityMessage" role="status" class="space-y-2 p-6 text-center text-sm text-neutral-600 dark:text-neutral-400">
+          <p>{{ availabilityMessage }}</p>
+          <div v-if="isRescheduling && existingReservation" class="space-y-1">
+            <p class="font-semibold">Current Reservation Protected</p>
+            <p v-if="!availabilityError && availabilityData?.reservationWindowStatus !== 'CLOSED' && availabilityData?.reservationWindowStatus !== 'NOT_YET_OPEN'">
+              No alternative open slots were found.
+            </p>
+            <p>Your reservation at Workstation Seat #{{ existingReservation.seatNumber }} has not changed.</p>
+          </div>
+        </div>
 
         <!-- Success Screen (Post-Confirmation) -->
         <div v-else-if="confirmedReservation" class="py-8 text-center space-y-4">
@@ -160,126 +167,70 @@
           <UButton color="primary" label="Done" class="mt-4" @click="open = false" />
         </div>
 
-        <!-- Wizard Step 1: Select Half-Day Block -->
         <div v-else-if="currentStep === 1" class="space-y-4">
           <p class="text-sm text-neutral-600 dark:text-neutral-400">
-            Select an upcoming half-day block within your exam window:
+            Morning starts before 12:30 PM. Afternoon starts at 12:30 PM or later.
           </p>
-
-          <div
-            v-if="!availabilityData?.blocks || availabilityData.blocks.length === 0"
-            class="p-6 text-center space-y-3"
-          >
-            <div
-              v-if="isRescheduling && existingReservation"
-              class="p-4 rounded-xl border border-primary-500/30 bg-primary-50/50 dark:bg-primary-950/30 text-left space-y-2"
-            >
-              <div
-                class="flex items-center gap-2 text-primary-700 dark:text-primary-300 font-semibold text-sm"
-              >
-                <UIcon name="i-lucide-shield-check" class="w-5 h-5 text-primary-500 shrink-0" />
-                <span>Current Reservation Protected</span>
-              </div>
-              <p class="text-xs text-neutral-600 dark:text-neutral-400">
-                No alternative open slots were found within your exam window. Your existing
-                reservation for
-                <strong class="text-neutral-800 dark:text-neutral-200">
-                  {{
-                    formatReservationTime(
-                      existingReservation.startTime,
-                      existingReservation.endTime
-                    )
-                  }}
-                </strong>
-                at
-                <strong class="text-neutral-800 dark:text-neutral-200">
-                  Workstation Seat #{{ existingReservation.seatNumber }}
-                </strong>
-                remains active.
+          <div class="grid grid-cols-2 gap-3">
+            <div v-for="period in periods" :key="period.value" class="space-y-1">
+              <UButton
+                block
+                variant="outline"
+                :label="period.label"
+                :disabled="!availabilityData?.schedulingChoices?.[period.value]?.length"
+                @click="choosePeriod(period.value)"
+              />
+              <p v-if="!availabilityData?.schedulingChoices?.[period.value]?.length" class="text-xs text-neutral-500">
+                No {{ period.value }} availability.
               </p>
             </div>
-            <p v-else class="text-neutral-500 text-sm">
-              No testing-center availability is currently available within your exam window.
-            </p>
-          </div>
-
-          <div v-else class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <button
-              v-for="block in availabilityData.blocks"
-              :key="block.id"
-              type="button"
-              class="p-4 rounded-xl border text-left transition-all cursor-pointer space-y-3 relative overflow-hidden"
-              :class="[
-                selectedBlockId === block.id
-                  ? 'border-primary-500 bg-primary-50/40 dark:bg-primary-950/30 ring-2 ring-primary-500'
-                  : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700'
-              ]"
-              @click="chooseBlock(block)"
-            >
-              <!-- Top Row: Block Title & Date -->
-              <div class="flex items-start justify-between gap-2">
-                <div class="space-y-0.5">
-                  <div class="flex items-center gap-2">
-                    <p class="font-bold text-sm text-neutral-900 dark:text-neutral-100">
-                      {{ block.label }}
-                    </p>
-                    <UBadge
-                      v-if="block.isCurrentBlock"
-                      color="success"
-                      variant="subtle"
-                      size="xs"
-                      class="animate-pulse"
-                    >
-                      In Progress
-                    </UBadge>
-                  </div>
-                  <p class="break-words text-xs text-neutral-500 dark:text-neutral-400">
-                    {{ block.dateLabel }} · {{ formatTimezoneLabel(block.timezone) }}
-                  </p>
-                </div>
-
-              </div>
-              <p class="text-xs text-neutral-500">Available arrival times</p>
-            </button>
           </div>
         </div>
 
-        <!-- Wizard Step 2: Hourly Slot Selection -->
         <div v-else-if="currentStep === 2" class="space-y-4">
           <p class="text-sm text-neutral-600 dark:text-neutral-400">
-            Pick an arrival time for
-            <strong>{{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}</strong>.
-            <span v-if="selectedBlock"> Times shown in {{ formatTimezoneLabel(selectedBlock.timezone) }}.</span>
+            Available {{ selectedPeriod }} days closest to the end of your exam window.
           </p>
-
-          <div
-            v-if="!availabilityData?.hourlySlots || availabilityData.hourlySlots.length === 0"
-            class="p-6 text-center text-neutral-500 text-sm"
-          >
-            No open time slots found for this block.
-          </div>
-
-          <div v-else class="grid grid-cols-2 sm:grid-cols-4 gap-3">
-            <button
-              v-for="slot in availabilityData.hourlySlots"
-              :key="slot.startTime"
-              type="button"
-              class="p-3 rounded-lg border text-center transition-all cursor-pointer font-medium text-sm flex flex-col items-center justify-center gap-1"
-              :class="[
-                selectedSlot?.startTime === slot.startTime
-                  ? 'border-primary-500 bg-primary-600 text-white font-bold shadow-sm'
-                  : 'border-neutral-200 dark:border-neutral-800 hover:border-neutral-300 dark:hover:border-neutral-700 text-neutral-900 dark:text-neutral-100'
-              ]"
-              @click="chooseSlot(slot)"
-            >
-              <UIcon name="i-lucide-clock" class="w-4 h-4" />
-              <span>{{ slot.formattedTime }}</span>
-            </button>
+          <p v-if="!availableDays.length" role="status" class="text-sm text-neutral-500">
+            No {{ selectedPeriod }} availability. Go back to choose a different time of day.
+          </p>
+          <div v-else class="grid grid-cols-2 gap-3">
+            <UButton
+              v-for="day in availableDays"
+              :key="day.date"
+              block
+              variant="outline"
+              :label="day.label"
+              @click="chooseDay(day.date)"
+            />
           </div>
         </div>
 
-        <!-- Wizard Step 3: Review & Confirm -->
         <div v-else-if="currentStep === 3" class="space-y-4">
+          <p class="text-sm text-neutral-600 dark:text-neutral-400">
+            Choose an available start on <strong>{{ selectedDay?.label }}</strong>.
+          </p>
+          <p v-if="!selectedDay?.times.length" role="status" class="text-sm text-neutral-500">
+            No suggested times are available for this day. Go back to choose another day.
+          </p>
+          <div v-else class="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <UButton
+              v-for="slot in selectedDay.times"
+              :key="slot.startTime"
+              block
+              variant="outline"
+              @click="chooseSlot(slot)"
+            >
+              <span class="flex flex-col text-center">
+                <span>{{ slot.formattedTime }}</span>
+                <span class="text-xs">{{ formatTimezoneLabel(slot.timezone) }}</span>
+              </span>
+            </UButton>
+          </div>
+        </div>
+
+        <!-- Wizard Step 4: Review & Confirm -->
+        <div v-else-if="currentStep === 4" class="space-y-4">
           <div
             class="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50 dark:bg-neutral-900/50 space-y-3"
           >
@@ -315,19 +266,15 @@
 
             <div class="grid grid-cols-2 gap-4 pt-1">
               <div>
-                <p class="text-xs text-neutral-500 uppercase">Block & Date</p>
+                <p class="text-xs text-neutral-500 uppercase">Exam Day</p>
                 <p class="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                  {{ selectedBlock?.label }}, {{ selectedBlock?.dateLabel }}
+                  {{ selectedDay?.label }}
                 </p>
               </div>
               <div>
                 <p class="text-xs text-neutral-500 uppercase">Time Slot</p>
                 <p class="font-semibold text-neutral-900 dark:text-neutral-100 text-sm">
-                  {{
-                    selectedBlock
-                      ? `${selectedSlot?.formattedTime} · ${formatTimezoneLabel(selectedBlock.timezone)}`
-                      : selectedSlot?.formattedTime
-                  }}
+                  {{ selectedSlot && `${selectedSlot.formattedTime} · ${formatTimezoneLabel(selectedSlot.timezone)}` }}
                 </p>
               </div>
             </div>
@@ -336,7 +283,7 @@
               class="pt-2 border-t border-neutral-200 dark:border-neutral-800 flex items-center gap-2 text-xs text-neutral-500"
             >
               <UIcon name="i-lucide-info" class="w-4 h-4 text-primary-500 shrink-0" />
-              <span>Workstation seat will be assigned deterministically upon confirmation.</span>
+              <span>Your workstation will be assigned when you confirm.</span>
             </div>
           </div>
         </div>
@@ -372,7 +319,7 @@
               @click="handleCancelRescheduling"
             />
             <UButton
-              v-if="currentStep < 3"
+              v-if="currentStep < 4"
               color="primary"
               label="Next"
               trailing-icon="i-lucide-arrow-right"
@@ -399,8 +346,8 @@ import type { AssignmentRow } from '@@/shared/models/assignment'
 import type {
   CbtfReservationDto,
   CbtfAvailabilityStatus,
-  CbtfStudentBlock,
-  CbtfStudentStart
+  CbtfSchedulingDay,
+  CbtfSchedulingPeriod
 } from '@@/shared/models/cbtf'
 import { useCbtfStudent, type CbtfAvailabilityData } from '~/composables/features/useCbtfStudent'
 
@@ -440,8 +387,14 @@ const loadingAvailability = ref(false)
 const booking = ref(false)
 const cancelling = ref(false)
 
-const selectedBlockId = ref<string>('')
-const selectedSlot = ref<CbtfStudentStart | null>(null)
+const periods: { value: CbtfSchedulingPeriod; label: string }[] = [
+  { value: 'morning', label: 'Morning' },
+  { value: 'afternoon', label: 'Afternoon' }
+]
+const selectedPeriod = ref<CbtfSchedulingPeriod | null>(null)
+const selectedDate = ref('')
+const selectedSlot = ref<CbtfSchedulingDay['times'][number] | null>(null)
+let availabilityRequest = 0
 const availabilityData = ref<CbtfAvailabilityData | null>(null)
 const availabilityError = ref<'INVALID_ASSIGNMENT_WINDOW' | 'REQUEST_FAILED' | null>(null)
 const availabilityMessages: Record<Exclude<CbtfAvailabilityStatus, 'AVAILABLE'> | 'REQUEST_FAILED', string> = {
@@ -458,7 +411,11 @@ const availabilityMessages: Record<Exclude<CbtfAvailabilityStatus, 'AVAILABLE'> 
 
 const availabilityMessage = computed(() => {
   const status = availabilityError.value ?? availabilityData.value?.availabilityStatus
-  return status && status !== 'AVAILABLE' ? availabilityMessages[status] : null
+  if (status && status !== 'AVAILABLE') return availabilityMessages[status]
+  const choices = availabilityData.value?.schedulingChoices
+  return availabilityData.value && !choices?.morning.length && !choices?.afternoon.length
+    ? availabilityMessages.NO_AVAILABLE_SEATS
+    : null
 })
 
 const effectiveDurationMinutes = computed(
@@ -473,11 +430,13 @@ const confirmedReservation = ref<CbtfReservationDto | null>(null)
 const stepTitle = computed(() => {
   switch (currentStep.value) {
     case 1:
-      return 'Select Half-Day Block'
+      return 'Choose a time of day'
     case 2:
-      return 'Pick Time Slot'
+      return 'Choose a day'
     case 3:
-      return 'Confirm'
+      return 'Choose a preferred time'
+    case 4:
+      return 'Review and confirm'
     default:
       return ''
   }
@@ -494,78 +453,90 @@ const modalDescription = computed(() => {
   return props.assignment?.title || 'Testing Center Reservation'
 })
 
-const selectedBlock = computed<CbtfStudentBlock | undefined>(() => {
-  return availabilityData.value?.blocks?.find((b) => b.id === selectedBlockId.value)
-})
+const availableDays = computed(() =>
+  selectedPeriod.value ? availabilityData.value?.schedulingChoices?.[selectedPeriod.value] ?? [] : []
+)
+const selectedDay = computed(() => availableDays.value.find((day) => day.date === selectedDate.value))
 
 const isNextDisabled = computed(() => {
   if (loadingAvailability.value || availabilityMessage.value) return true
-  if (currentStep.value === 1) return !selectedBlock.value
-  if (currentStep.value === 2) return !selectedSlot.value
-  return false
+  if (currentStep.value === 1) return !availableDays.value.length
+  if (currentStep.value === 2) return !selectedDay.value
+  return !selectedSlot.value
 })
 
-// Load availability when opening or changing block
-const loadAvailability = async (blockId?: string) => {
+const loadAvailability = async () => {
   if (!props.assignment?.id) return
+  const request = ++availabilityRequest
   loadingAvailability.value = true
   availabilityError.value = null
   try {
     const data = await fetchAvailability(
       props.assignment.id,
-      blockId || selectedBlockId.value || undefined,
       undefined,
-      isRescheduling.value ? props.existingReservation?.id : undefined
+      undefined,
+      isRescheduling.value ? props.existingReservation?.id : undefined,
+      'narrowing'
     )
-    availabilityData.value = data
-    if (!selectedBlockId.value && data.blocks && data.blocks.length > 0) {
-      selectedBlockId.value = data.blocks[0].id
-    }
+    if (request === availabilityRequest) availabilityData.value = data
   } catch (err) {
+    if (request !== availabilityRequest) return
     const response = err as { data?: { data?: { availabilityStatus?: string } } } | null
     availabilityData.value = null
     availabilityError.value = response?.data?.data?.availabilityStatus === 'INVALID_ASSIGNMENT_WINDOW'
       ? 'INVALID_ASSIGNMENT_WINDOW'
       : 'REQUEST_FAILED'
   } finally {
-    loadingAvailability.value = false
+    if (request === availabilityRequest) loadingAvailability.value = false
   }
 }
 
-const chooseBlock = async (block: CbtfStudentBlock) => {
-  selectedBlockId.value = block.id
-  selectedSlot.value = null
+const choosePeriod = (period: CbtfSchedulingPeriod) => {
+  if (period !== selectedPeriod.value) {
+    selectedDate.value = ''
+    selectedSlot.value = null
+  }
+  selectedPeriod.value = period
   currentStep.value = 2
-  await loadAvailability(block.id)
 }
 
-const goToNextStep = () => {
-  if (currentStep.value === 1 && selectedBlock.value) {
-    return chooseBlock(selectedBlock.value)
-  }
-  currentStep.value++
-}
-
-const chooseSlot = (slot: CbtfStudentStart) => {
-  selectedSlot.value = slot
+const chooseDay = (date: string) => {
+  if (date !== selectedDate.value) selectedSlot.value = null
+  selectedDate.value = date
   currentStep.value = 3
 }
 
-const startRescheduling = () => {
-  isRescheduling.value = true
+const goToNextStep = () => {
+  if (!isNextDisabled.value) currentStep.value++
+}
+
+const chooseSlot = (slot: CbtfSchedulingDay['times'][number]) => {
+  selectedSlot.value = slot
+  currentStep.value = 4
+}
+
+const resetScheduling = () => {
+  availabilityRequest++
+  loadingAvailability.value = false
   currentStep.value = 1
-  selectedBlockId.value = ''
+  selectedPeriod.value = null
+  selectedDate.value = ''
   selectedSlot.value = null
   confirmedReservation.value = null
+  availabilityData.value = null
+  availabilityError.value = null
+}
+
+const startRescheduling = () => {
+  resetScheduling()
+  isRescheduling.value = true
   loadAvailability()
 }
 
 const handleCancelRescheduling = () => {
   if (isRescheduling.value && props.existingReservation) {
     isRescheduling.value = false
-    currentStep.value = 1
-    selectedBlockId.value = ''
-    selectedSlot.value = null
+    resetScheduling()
   } else {
     open.value = false
   }
@@ -635,17 +606,8 @@ const statusBadgeColor = (status: string) => {
 }
 
 watch(open, (isOpen) => {
-  if (isOpen) {
-    confirmedReservation.value = null
-    isRescheduling.value = false
-    currentStep.value = 1
-    selectedSlot.value = null
-    selectedBlockId.value = ''
-    availabilityData.value = null
-    availabilityError.value = null
-    if (!props.existingReservation) {
-      loadAvailability()
-    }
-  }
-})
+  resetScheduling()
+  isRescheduling.value = false
+  if (isOpen && !props.existingReservation) loadAvailability()
+}, { immediate: true })
 </script>
