@@ -27,7 +27,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
 
   const note = await addReservationNote(prisma as any, {
     reservationId: validation.data.reservationId,
-    seatNumber: validation.data.seatNumber,
     authorId: session.user.id,
     content: validation.data.content,
     hasPhotos: validation.data.hasPhotos

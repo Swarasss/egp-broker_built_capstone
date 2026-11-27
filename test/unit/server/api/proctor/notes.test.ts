@@ -76,6 +76,7 @@ describe('API: Proctor Notes Endpoints', () => {
   describe('POST /api/proctor/notes', () => {
     it('creates note directly using reservationId', async () => {
       const now = new Date()
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({ id: 'res-123' } as any)
       vi.mocked(prisma.cbtfReservationNote.create).mockResolvedValue({
         id: 'note-1',
         reservationId: 'res-123',
@@ -88,6 +89,7 @@ describe('API: Proctor Notes Endpoints', () => {
         reservation: {
           id: 'res-123',
           seatNumber: 14,
+          facility: { name: 'Facility B' },
           user: { firstName: 'Alice', lastName: 'Smith', studentId: '906000001' }
         }
       } as any)
@@ -108,6 +110,12 @@ describe('API: Proctor Notes Endpoints', () => {
       expect(response.data.id).toBe('note-1')
       expect(response.data.hasPhotos).toBe(true)
       expect(response.data.seatNumber).toBe(14)
+      expect(response.data.facilityName).toBe('Facility B')
+      expect(prisma.cbtfReservation.findUnique).toHaveBeenCalledWith({
+        where: { id: 'res-123' },
+        select: { id: true }
+      })
+      expect(prisma.cbtfReservation.findFirst).not.toHaveBeenCalled()
       expect(response.data.studentName).toBe('Alice Smith')
       expect(prisma.cbtfReservationNote.create).toHaveBeenCalledWith(
         expect.objectContaining({
@@ -120,52 +128,13 @@ describe('API: Proctor Notes Endpoints', () => {
       )
     })
 
-    it('creates note dynamically by seatNumber resolving active reservation', async () => {
-      const now = new Date()
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({ id: 'fac-1' } as any)
-      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue({
-        id: 'res-seated-seat-7',
-        seatNumber: 7
-      } as any)
-
-      vi.mocked(prisma.cbtfReservationNote.create).mockResolvedValue({
-        id: 'note-2',
-        reservationId: 'res-seated-seat-7',
-        authorId: 'proctor-1',
-        content: 'Unauthorized calculator on desk',
-        hasPhotos: false,
-        createdAt: now,
-        updatedAt: now,
-        author: { firstName: 'Proctor', lastName: 'User', email: 'proctor@example.com' },
-        reservation: {
-          id: 'res-seated-seat-7',
-          seatNumber: 7,
-          user: { firstName: 'Bob', lastName: 'Jones', studentId: '906000002' }
-        }
-      } as any)
-
-      const event = mockEvent(
-        'PROCTOR',
-        {},
-        {
-          seatNumber: 7,
-          content: 'Unauthorized calculator on desk',
-          hasPhotos: false
-        }
-      )
-
-      const response = await notesPost(event)
-
-      expect(response.statusCode).toBe(201)
-      expect(response.data.reservationId).toBe('res-seated-seat-7')
-      expect(response.data.seatNumber).toBe(7)
-      expect(prisma.cbtfReservationNote.create).toHaveBeenCalledWith(
-        expect.objectContaining({
-          data: expect.objectContaining({
-            reservationId: 'res-seated-seat-7'
-          })
-        })
-      )
+    it('rejects a bare seat number without looking up a facility or occupant', async () => {
+      await expect(
+        notesPost(mockEvent('PROCTOR', {}, { seatNumber: 7, content: 'Incident' }))
+      ).rejects.toMatchObject({ statusCode: 400 })
+      expect(prisma.cbtfFacility.findFirst).not.toHaveBeenCalled()
+      expect(prisma.cbtfReservation.findFirst).not.toHaveBeenCalled()
+      expect(prisma.cbtfReservationNote.create).not.toHaveBeenCalled()
     })
 
     it('rejects creation when neither reservationId nor seatNumber is provided', async () => {

@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import statusGet from '../../../../../server/api/proctor/status.get'
 import statusPatch from '../../../../../server/api/proctor/status.patch'
+import facilitiesGet from '../../../../../server/api/proctor/facilities.get'
 import feedGet from '../../../../../server/api/proctor/feed.get'
 import lookupGet from '../../../../../server/api/proctor/lookup.get'
 import checkInPost from '../../../../../server/api/proctor/check-in.post'
@@ -11,6 +12,7 @@ vi.mock('@@/server/utils/db', () => ({
   default: {
     cbtfFacility: {
       findFirst: vi.fn(),
+      findMany: vi.fn(),
       findUnique: vi.fn()
     },
     cbtfReservation: {
@@ -114,6 +116,68 @@ describe('API: Proctor Operations Endpoints', () => {
   })
 
   describe('Live Feed', () => {
+    it('lists all configured facilities and returns an empty feed without a valid selection', async () => {
+      const facilities = [
+        { id: 'fac-a', name: 'Facility A', timezone: 'UTC', totalSeats: 30 },
+        { id: 'fac-b', name: 'Facility B', timezone: 'UTC', totalSeats: 40 }
+      ]
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(facilities as any)
+      expect((await facilitiesGet(mockEvent())).data).toEqual(facilities)
+      expect(prisma.cbtfFacility.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          select: { id: true, name: true, timezone: true, totalSeats: true }
+        })
+      )
+
+      expect((await feedGet(mockEvent())).data).toBeNull()
+      expect(prisma.cbtfFacility.findUnique).not.toHaveBeenCalled()
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValueOnce(null)
+      expect((await feedGet(mockEvent('PROCTOR', { facilityId: 'removed' }))).data).toBeNull()
+      expect(prisma.cbtfFacility.findFirst).not.toHaveBeenCalled()
+      expect(prisma.cbtfReservation.findMany).not.toHaveBeenCalled()
+    })
+
+    it('switches rosters using the selected facility ID even for matching seat numbers', async () => {
+      vi.mocked(prisma.cbtfFacility.findUnique).mockImplementation(
+        async ({ where }) =>
+          ({
+            id: where.id,
+            name: where.id === 'fac-a' ? 'Facility A' : 'Facility B',
+            totalSeats: 40
+          }) as any
+      )
+      vi.mocked(prisma.cbtfReservation.findMany).mockImplementation(
+        async ({ where } = {}) =>
+          [
+            {
+              id: `res-${where?.facilityId}`,
+              facilityId: where?.facilityId,
+              seatNumber: 6,
+              status: 'CHECKED_IN',
+              startTime: new Date(),
+              endTime: new Date(),
+              facility: { name: where?.facilityId === 'fac-a' ? 'Facility A' : 'Facility B' }
+            }
+          ] as any
+      )
+
+      for (const [facilityId, facilityName] of [
+        ['fac-a', 'Facility A'],
+        ['fac-b', 'Facility B']
+      ]) {
+        const { data } = await feedGet(mockEvent('PROCTOR', { facilityId }))
+        expect(data.facility.id).toBe(facilityId)
+        expect(data.seated).toMatchObject([
+          { id: `res-${facilityId}`, facilityId, facilityName, seatNumber: 6 }
+        ])
+        expect(prisma.cbtfReservation.findMany).toHaveBeenLastCalledWith(
+          expect.objectContaining({
+            where: expect.objectContaining({ facilityId })
+          })
+        )
+      }
+    })
+
     it('returns facility capacity and grouped rosters', async () => {
       const now = new Date()
       const mockFacility = {
@@ -123,7 +187,7 @@ describe('API: Proctor Operations Endpoints', () => {
         checkInLeadMinutes: 5,
         checkInGraceMinutes: 15
       }
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue(mockFacility as any)
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(mockFacility as any)
 
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
         {
@@ -143,7 +207,7 @@ describe('API: Proctor Operations Endpoints', () => {
           facilityId: 'fac-1',
           assignmentId: 'asg-2',
           userId: 'usr-2',
-          seatNumber: 14,
+          seatNumber: 12,
           startTime: new Date(now.getTime() + 5 * 60000),
           endTime: new Date(now.getTime() + 65 * 60000),
           status: 'SCHEDULED',
@@ -152,13 +216,14 @@ describe('API: Proctor Operations Endpoints', () => {
         }
       ] as any)
 
-      const event = mockEvent('PROCTOR')
+      const event = mockEvent('PROCTOR', { facilityId: 'fac-1' })
       const res = await feedGet(event)
 
       expect(res.statusCode).toBe(200)
       expect(res.data.counts.seated).toBe(1)
       expect(res.data.counts.arriving).toBe(1)
-      expect(res.data.seated[0].seatNumber).toBe(12)
+      expect(res.data.seated).toMatchObject([{ id: 'res-seated', seatNumber: 12 }])
+      expect(res.data.arriving).toMatchObject([{ id: 'res-arriving', seatNumber: 12 }])
       expect(res.data.seated[0].elapsedMinutes).toBeGreaterThanOrEqual(19)
       expect(res.data.facility.occupiedSeats).toBe(1)
       expect(res.data.facility.availableSeats).toBe(47)
@@ -186,23 +251,21 @@ describe('API: Proctor Operations Endpoints', () => {
         avatarUrl: null
       }
       vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUser as any)
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({
-        id: 'fac-1',
-        checkInLeadMinutes: 5,
-        checkInGraceMinutes: 15
-      } as any)
 
-      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValueOnce({
-        id: 'res-seated',
-        facilityId: 'fac-1',
-        assignmentId: 'asg-1',
-        userId: 'usr-1',
-        seatNumber: 12,
-        startTime: new Date('2026-10-05T09:00:00.000Z'),
-        endTime: new Date('2026-10-05T10:00:00.000Z'),
-        status: 'CHECKED_IN',
-        assignment: { title: 'Midterm 1' }
-      } as any)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([
+        {
+          id: 'res-seated',
+          facilityId: 'fac-1',
+          facility: { name: 'Facility A', checkInLeadMinutes: 5, checkInGraceMinutes: 15 },
+          assignmentId: 'asg-1',
+          userId: 'usr-1',
+          seatNumber: 12,
+          startTime: new Date(Date.now() - 5 * 60000),
+          endTime: new Date(Date.now() + 55 * 60000),
+          status: 'CHECKED_IN',
+          assignment: { title: 'Midterm 1' }
+        }
+      ] as any)
 
       const event = mockEvent('PROCTOR', { studentId: '906000001' })
       const res = await lookupGet(event)
@@ -223,19 +286,12 @@ describe('API: Proctor Operations Endpoints', () => {
         avatarUrl: null
       }
       vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUser as any)
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({
-        id: 'fac-1',
-        checkInLeadMinutes: 5,
-        checkInGraceMinutes: 15
-      } as any)
 
-      // No seated reservation
-      vi.mocked(prisma.cbtfReservation.findFirst)
-        .mockResolvedValueOnce(null)
-        // Scheduled reservation starting in 3 minutes (within 5 min lead)
-        .mockResolvedValueOnce({
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([
+        {
           id: 'res-arriving',
           facilityId: 'fac-1',
+          facility: { name: 'Facility A', checkInLeadMinutes: 5, checkInGraceMinutes: 15 },
           assignmentId: 'asg-2',
           userId: 'usr-2',
           seatNumber: 15,
@@ -243,7 +299,8 @@ describe('API: Proctor Operations Endpoints', () => {
           endTime: new Date(now.getTime() + 63 * 60000),
           status: 'SCHEDULED',
           assignment: { title: 'Quiz 2' }
-        } as any)
+        }
+      ] as any)
 
       const event = mockEvent('PROCTOR', { studentId: '906000002' })
       const res = await lookupGet(event)
@@ -264,19 +321,12 @@ describe('API: Proctor Operations Endpoints', () => {
         avatarUrl: null
       }
       vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUser as any)
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({
-        id: 'fac-1',
-        checkInLeadMinutes: 5,
-        checkInGraceMinutes: 15
-      } as any)
 
-      // No seated reservation
-      vi.mocked(prisma.cbtfReservation.findFirst)
-        .mockResolvedValueOnce(null)
-        // Scheduled reservation starting in 25 minutes (lead allowance is 5)
-        .mockResolvedValueOnce({
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([
+        {
           id: 'res-future',
           facilityId: 'fac-1',
+          facility: { name: 'Facility A', checkInLeadMinutes: 5, checkInGraceMinutes: 15 },
           assignmentId: 'asg-3',
           userId: 'usr-3',
           seatNumber: 20,
@@ -284,7 +334,8 @@ describe('API: Proctor Operations Endpoints', () => {
           endTime: new Date(now.getTime() + 85 * 60000),
           status: 'SCHEDULED',
           assignment: { title: 'Final Exam' }
-        } as any)
+        }
+      ] as any)
 
       const event = mockEvent('PROCTOR', { studentId: '906000003' })
       const res = await lookupGet(event)
@@ -304,19 +355,12 @@ describe('API: Proctor Operations Endpoints', () => {
         avatarUrl: null
       }
       vi.mocked(prisma.user.findFirst).mockResolvedValue(mockUser as any)
-      vi.mocked(prisma.cbtfFacility.findFirst).mockResolvedValue({
-        id: 'fac-1',
-        checkInLeadMinutes: 5,
-        checkInGraceMinutes: 15
-      } as any)
 
-      // No seated reservation
-      vi.mocked(prisma.cbtfReservation.findFirst)
-        .mockResolvedValueOnce(null)
-        // Scheduled reservation started 25 minutes ago (grace allowance is 15)
-        .mockResolvedValueOnce({
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValueOnce([
+        {
           id: 'res-past',
           facilityId: 'fac-1',
+          facility: { name: 'Facility A', checkInLeadMinutes: 5, checkInGraceMinutes: 15 },
           assignmentId: 'asg-4',
           userId: 'usr-4',
           seatNumber: 8,
@@ -324,7 +368,8 @@ describe('API: Proctor Operations Endpoints', () => {
           endTime: new Date(now.getTime() + 35 * 60000),
           status: 'SCHEDULED',
           assignment: { title: 'Exam 1' }
-        } as any)
+        }
+      ] as any)
 
       const event = mockEvent('PROCTOR', { studentId: '906000004' })
       const res = await lookupGet(event)
@@ -334,41 +379,148 @@ describe('API: Proctor Operations Endpoints', () => {
     })
   })
 
-  describe('Check-In & Check-Out Execution', () => {
-    it('checks in reservation and records proctor user ID', async () => {
-      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1',
-        status: 'SCHEDULED',
-        seatNumber: 10,
-        assignment: { title: 'Midterm' },
-        user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
-      } as any)
-
-      vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
-        id: 'res-1',
-        status: 'CHECKED_IN',
-        seatNumber: 10,
-        checkedInAt: new Date(),
-        checkedInByUserId: 'proctor-1',
-        assignment: { title: 'Midterm' },
-        user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
-      } as any)
-
-      const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
-      const res = await checkInPost(event)
-
-      expect(res.statusCode).toBe(200)
-      expect(res.data.status).toBe('CHECKED_IN')
-      expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'res-1' },
-          data: expect.objectContaining({
-            status: 'CHECKED_IN',
-            checkedInByUserId: 'proctor-1'
-          })
-        })
-      )
+  describe('Multi-facility lookup priority', () => {
+    const reservation = (
+      id: string,
+      facilityId: string,
+      start: number,
+      end: number,
+      status = 'SCHEDULED'
+    ) => ({
+      id,
+      facilityId,
+      status,
+      seatNumber: 6,
+      startTime: new Date(Date.now() + start * 60000),
+      endTime: new Date(Date.now() + end * 60000),
+      assignment: { title: 'Midterm' },
+      facility: {
+        name: facilityId,
+        checkInLeadMinutes: facilityId === 'Facility B' ? 10 : 3,
+        checkInGraceMinutes: 15
+      }
     })
+
+    beforeEach(() => {
+      vi.mocked(prisma.user.findFirst).mockResolvedValue({
+        id: 'usr-1',
+        studentId: '906000001'
+      } as any)
+    })
+
+    it.each(['Facility A', 'Facility B'])(
+      'finds a reservation at %s without a facility filter',
+      async (facilityId) => {
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+          reservation('old', 'Facility A', -120, -60),
+          reservation('current', facilityId, facilityId === 'Facility B' ? 8 : 2, 60)
+        ] as any)
+        const { data } = await lookupGet(mockEvent('PROCTOR', { studentId: '906000001' }))
+        expect(data).toMatchObject({
+          decision: 'READY_FOR_CHECKIN',
+          leadMinutes: facilityId === 'Facility B' ? 10 : 3,
+          reservation: {
+            id: 'current',
+            facilityId,
+            facilityName: facilityId,
+            seatNumber: 6,
+            assignmentTitle: 'Midterm'
+          }
+        })
+        expect(data.message).toContain(`${facilityId} · Seat #6`)
+        expect(prisma.cbtfReservation.findMany).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { userId: 'usr-1', status: { in: ['CHECKED_IN', 'SCHEDULED'] } }
+          })
+        )
+        expect(prisma.cbtfFacility.findFirst).not.toHaveBeenCalled()
+      }
+    )
+
+    it('prioritizes a current checked-in reservation over a ready scheduled exam', async () => {
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+        reservation('seated', 'Facility B', -20, 40, 'CHECKED_IN'),
+        reservation('ready', 'Facility A', 2, 62)
+      ] as any)
+      const { data } = await lookupGet(mockEvent('PROCTOR', { studentId: '906000001' }))
+      expect(data).toMatchObject({
+        decision: 'READY_FOR_CHECKOUT',
+        reservation: { id: 'seated', facilityName: 'Facility B' }
+      })
+    })
+
+    it('prefers the closest upcoming exam over overdue check-in and checkout candidates', async () => {
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+        reservation('old-seated', 'Facility B', -160, -100, 'CHECKED_IN'),
+        reservation('late', 'Facility A', -25, 35),
+        reservation('upcoming', 'Facility B', 30, 90),
+        reservation('later', 'Facility A', 35, 95)
+      ] as any)
+      const { data } = await lookupGet(mockEvent('PROCTOR', { studentId: '906000001' }))
+      expect(data).toMatchObject({ decision: 'EARLY', reservation: { id: 'upcoming' } })
+    })
+
+    it('allows an override for the most recent started exam that is still in progress', async () => {
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+        reservation('older-late', 'Facility A', -40, 20),
+        reservation('recent-late', 'Facility B', -25, 35)
+      ] as any)
+      const { data } = await lookupGet(mockEvent('PROCTOR', { studentId: '906000001' }))
+      expect(data).toMatchObject({
+        decision: 'LATE',
+        graceMinutes: 15,
+        reservation: { id: 'recent-late', facilityName: 'Facility B' }
+      })
+      expect(data.message).toContain('Proctor override required')
+    })
+  })
+
+  describe('Check-In & Check-Out Execution', () => {
+    it.each(['fac-a', 'fac-b'])(
+      'checks in reservation and records proctor user ID at %s',
+      async (facilityId) => {
+        vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+          id: 'res-1',
+          status: 'SCHEDULED',
+          seatNumber: 10,
+          facilityId,
+          facility: { name: facilityId },
+          assignment: { title: 'Midterm' },
+          user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
+        } as any)
+
+        vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
+          id: 'res-1',
+          status: 'CHECKED_IN',
+          seatNumber: 10,
+          facilityId,
+          facility: { name: facilityId },
+          checkedInAt: new Date(),
+          checkedInByUserId: 'proctor-1',
+          assignment: { title: 'Midterm' },
+          user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
+        } as any)
+
+        const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
+        const res = await checkInPost(event)
+
+        expect(res.statusCode).toBe(200)
+        expect(res.data).toMatchObject({ facilityId, facilityName: facilityId, seatNumber: 10 })
+        const update = vi.mocked(prisma.cbtfReservation.update).mock.calls[0]?.[0].data
+        expect(update).not.toHaveProperty('facilityId')
+        expect(update).not.toHaveProperty('seatNumber')
+        expect(res.data.status).toBe('CHECKED_IN')
+        expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'res-1' },
+            data: expect.objectContaining({
+              status: 'CHECKED_IN',
+              checkedInByUserId: 'proctor-1'
+            })
+          })
+        )
+      }
+    )
 
     it('rejects check-in when scanned student ID does not match the reservation', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
@@ -394,39 +546,50 @@ describe('API: Proctor Operations Endpoints', () => {
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
 
-    it('checks out reservation and records proctor user ID', async () => {
-      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1',
-        status: 'CHECKED_IN',
-        seatNumber: 10,
-        assignment: { title: 'Midterm' },
-        user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
-      } as any)
+    it.each(['fac-a', 'fac-b'])(
+      'checks out reservation and records proctor user ID at %s',
+      async (facilityId) => {
+        vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+          id: 'res-1',
+          status: 'CHECKED_IN',
+          seatNumber: 10,
+          facilityId,
+          facility: { name: facilityId },
+          assignment: { title: 'Midterm' },
+          user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
+        } as any)
 
-      vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
-        id: 'res-1',
-        status: 'CHECKED_OUT',
-        seatNumber: 10,
-        checkedOutAt: new Date(),
-        checkedOutByUserId: 'proctor-1',
-        assignment: { title: 'Midterm' },
-        user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
-      } as any)
+        vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
+          id: 'res-1',
+          status: 'CHECKED_OUT',
+          seatNumber: 10,
+          facilityId,
+          facility: { name: facilityId },
+          checkedOutAt: new Date(),
+          checkedOutByUserId: 'proctor-1',
+          assignment: { title: 'Midterm' },
+          user: { firstName: 'Alice', lastName: 'A', studentId: '906000001', avatarUrl: null }
+        } as any)
 
-      const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
-      const res = await checkOutPost(event)
+        const event = mockEvent('PROCTOR', {}, { reservationId: 'res-1' })
+        const res = await checkOutPost(event)
 
-      expect(res.statusCode).toBe(200)
-      expect(res.data.status).toBe('CHECKED_OUT')
-      expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
-        expect.objectContaining({
-          where: { id: 'res-1' },
-          data: expect.objectContaining({
-            status: 'CHECKED_OUT',
-            checkedOutByUserId: 'proctor-1'
+        expect(res.statusCode).toBe(200)
+        expect(res.data).toMatchObject({ facilityId, facilityName: facilityId, seatNumber: 10 })
+        const update = vi.mocked(prisma.cbtfReservation.update).mock.calls[0]?.[0].data
+        expect(update).not.toHaveProperty('facilityId')
+        expect(update).not.toHaveProperty('seatNumber')
+        expect(res.data.status).toBe('CHECKED_OUT')
+        expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
+          expect.objectContaining({
+            where: { id: 'res-1' },
+            data: expect.objectContaining({
+              status: 'CHECKED_OUT',
+              checkedOutByUserId: 'proctor-1'
+            })
           })
-        })
-      )
-    })
+        )
+      }
+    )
   })
 })

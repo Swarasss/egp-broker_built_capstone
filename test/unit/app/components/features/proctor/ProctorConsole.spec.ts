@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { mount } from '@vue/test-utils'
-import { ref } from 'vue'
+import { flushPromises, mount } from '@vue/test-utils'
+import { h, ref } from 'vue'
 import ProctorConsole from '~/components/features/proctor/ProctorConsole.vue'
 
 describe('ProctorConsole Component', () => {
@@ -10,6 +10,11 @@ describe('ProctorConsole Component', () => {
     mockState = {
       isOnDuty: ref(true),
       toggleDuty: vi.fn(),
+      facilities: ref([
+        { id: 'fac-1', name: 'Main CBTF' },
+        { id: 'fac-2', name: 'Facility B' }
+      ]),
+      selectedFacilityId: ref(''),
       facility: ref({
         id: 'fac-1',
         name: 'Main CBTF',
@@ -22,6 +27,7 @@ describe('ProctorConsole Component', () => {
         {
           id: 'seat-1',
           seatNumber: 4,
+          facilityName: 'Main CBTF',
           studentName: 'David Chen',
           assignmentTitle: 'ECE 120',
           remainingMinutes: 45
@@ -67,7 +73,7 @@ describe('ProctorConsole Component', () => {
     }
   })
 
-  it('renders standard console controls when isTraining is false', () => {
+  it('renders standard console controls and updates testing center choices', async () => {
     const wrapper = mount(ProctorConsole, {
       props: {
         isTraining: false,
@@ -84,7 +90,16 @@ describe('ProctorConsole Component', () => {
           USwitch: true,
           UInput: true,
           BaseCard: { template: '<div><slot /></div>' },
-          BaseDataTable: true,
+          BaseDataTable: {
+            props: ['columns', 'data'],
+            setup: (props) => () =>
+              h(
+                'div',
+                props.data.map((student: any) =>
+                  props.columns[0].cell({ row: { original: student } })
+                )
+              )
+          },
           FeaturesProctorNoteModal: true,
           NuxtLink: {
             template: '<a :href="$attrs.to"><slot /></a>'
@@ -95,7 +110,34 @@ describe('ProctorConsole Component', () => {
 
     expect(wrapper.text()).toContain('Main CBTF')
     expect(wrapper.text()).toContain('Training Mode')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Currently Seated'))!
+      .trigger('click')
+    expect(wrapper.text()).toContain('Main CBTF · Seat #4')
     expect(wrapper.find('[data-testid="training-banner"]').exists()).toBe(false)
+    const select = wrapper.get('select#proctor-facility')
+    expect(select.findAll('option').map((option) => option.text())).toEqual([
+      'Select a testing center',
+      'Main CBTF',
+      'Facility B'
+    ])
+    expect(wrapper.text()).toContain('Select a testing center to view its live roster.')
+    await select.setValue('fac-2')
+    expect(mockState.selectedFacilityId.value).toBe('fac-2')
+
+    mockState.facilities.value = [
+      { id: 'fac-1', name: 'Renamed Center' },
+      { id: 'fac-3', name: 'Facility C' }
+    ]
+    mockState.selectedFacilityId.value = ''
+    await flushPromises()
+    expect(select.findAll('option').map((option) => option.text())).toEqual([
+      'Select a testing center',
+      'Renamed Center',
+      'Facility C'
+    ])
+    expect(wrapper.text()).toContain('Select a testing center to view its live roster.')
   })
 
   it('renders training banner, controls, and pills when isTraining is true', async () => {
@@ -148,10 +190,10 @@ describe('ProctorConsole Component', () => {
     expect(mockState.resetScenario).toHaveBeenCalled()
   })
 
-  it('triggers lookupStudent when swipe form is submitted', async () => {
+  it('looks up the second scan and confirms only the displayed student on explicit action', async () => {
     const wrapper = mount(ProctorConsole, {
       props: {
-        isTraining: true,
+        isTraining: false,
         proctorState: mockState
       },
       global: {
@@ -159,6 +201,7 @@ describe('ProctorConsole Component', () => {
           UIcon: true,
           UBadge: true,
           UButton: {
+            emits: ['click'],
             template:
               '<button :disabled="$attrs.disabled" @click="$emit(\'click\')"><slot>{{ $attrs.label }}</slot></button>'
           },
@@ -176,11 +219,39 @@ describe('ProctorConsole Component', () => {
       }
     })
 
+    mockState.clearLookup.mockImplementation(() => {
+      mockState.lookupResult.value = null
+    })
+    mockState.lookupStudent.mockImplementation((scan: string) => {
+      const studentId = scan.slice(1, 10)
+      mockState.lookupResult.value = {
+        decision: 'READY_FOR_CHECKIN',
+        student: { firstName: studentId === '900000001' ? 'Alice' : 'Bob', studentId },
+        reservation: { id: `res-${studentId}`, facilityName: 'Facility B', seatNumber: 6 }
+      }
+    })
+
     const input = wrapper.find('input')
     await input.setValue(';900000001=2812?')
     await wrapper.find('form').trigger('submit.prevent')
 
     expect(mockState.lookupStudent).toHaveBeenCalledWith(';900000001=2812?')
+    expect(wrapper.text()).toContain('Alice')
+    expect(wrapper.text()).toContain('Facility B · Seat #6')
+
+    await input.setValue(';900000002=2812?')
+    expect(wrapper.text()).not.toContain('Confirm Check-In')
+    await wrapper.get('form').trigger('submit')
+    expect(mockState.lookupStudent).toHaveBeenLastCalledWith(';900000002=2812?')
+    expect(mockState.confirmCheckIn).not.toHaveBeenCalled()
+    expect(mockState.confirmCheckOut).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('Bob')
+
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text().includes('Confirm Check-In'))!
+      .trigger('click')
+    expect(mockState.confirmCheckIn).toHaveBeenCalledExactlyOnceWith('res-900000002', '900000002')
   })
 
   it('triggers confirmCheckIn when check-in button is clicked on verification card', async () => {
@@ -221,7 +292,7 @@ describe('ProctorConsole Component', () => {
     expect(checkInBtn).toBeDefined()
     await checkInBtn!.trigger('click')
 
-    expect(mockState.confirmCheckIn).toHaveBeenCalledWith('res-std-1')
+    expect(mockState.confirmCheckIn).toHaveBeenCalledWith('res-std-1', '900000001')
   })
 
   it('triggers confirmCheckOut when checkout button is clicked on verification card', async () => {
@@ -262,7 +333,7 @@ describe('ProctorConsole Component', () => {
     expect(checkOutBtn).toBeDefined()
     await checkOutBtn!.trigger('click')
 
-    expect(mockState.confirmCheckOut).toHaveBeenCalledWith('res-seat-1')
+    expect(mockState.confirmCheckOut).toHaveBeenCalledWith('res-seat-1', '900000004')
   })
 
   it('defaults to Expected Arrivals tab as the first and active feed tab', () => {
@@ -407,7 +478,6 @@ describe('ProctorConsole Component', () => {
           UInput: true,
           BaseCard: { template: '<div><slot /></div>' },
           BaseDataTable: true,
-          FeaturesCbtfReservationsTable: true,
           FeaturesProctorNoteModal: true,
           NuxtLink: { template: '<a :href="$attrs.to"><slot /></a>' }
         }

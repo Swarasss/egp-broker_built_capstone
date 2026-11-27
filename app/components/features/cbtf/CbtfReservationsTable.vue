@@ -120,6 +120,7 @@
             <tr>
               <th class="px-4 py-3">Student</th>
               <th class="px-4 py-3">Assignment</th>
+              <th v-if="readOnly" class="px-4 py-3">Testing Center</th>
               <th class="px-4 py-3 text-center">Seat</th>
               <th class="px-4 py-3">Start Time</th>
               <th class="px-4 py-3">End Time</th>
@@ -154,6 +155,10 @@
                 <span class="font-medium text-neutral-800 dark:text-neutral-200">
                   {{ res.assignmentTitle || '—' }}
                 </span>
+              </td>
+
+              <td v-if="readOnly" class="px-4 py-3">
+                {{ res.facilityName || 'Testing center unavailable' }}
               </td>
 
               <!-- Seat -->

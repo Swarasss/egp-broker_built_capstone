@@ -1,4 +1,4 @@
-import { defineEventHandler, createError, setHeader } from 'h3'
+import { defineEventHandler, createError, getQuery, setHeader } from 'h3'
 import prisma from '@@/server/utils/db'
 import { getProctorLiveFeed } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
@@ -20,7 +20,11 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
-  const feed = await getProctorLiveFeed(prisma as any)
+  const { facilityId } = getQuery(event)
+  const feed = await getProctorLiveFeed(
+    prisma,
+    typeof facilityId === 'string' ? facilityId : undefined
+  )
 
   return {
     statusCode: 200,

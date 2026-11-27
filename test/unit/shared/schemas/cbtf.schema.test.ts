@@ -320,14 +320,14 @@ describe('CBTF Shared Schemas', () => {
       }
     })
 
-    it('validates a note with seatNumber', () => {
-      const valid = {
+    it('rejects a note with only a seatNumber', () => {
+      const invalid = {
         seatNumber: 12,
         content: 'Glancing at neighboring screen',
         hasPhotos: false
       }
-      const result = createReservationNoteInputSchema.safeParse(valid)
-      expect(result.success).toBe(true)
+      const result = createReservationNoteInputSchema.safeParse(invalid)
+      expect(result.success).toBe(false)
     })
 
     it('defaults hasPhotos to false when omitted', () => {
@@ -342,7 +342,7 @@ describe('CBTF Shared Schemas', () => {
       }
     })
 
-    it('rejects when neither reservationId nor seatNumber is provided', () => {
+    it('rejects when reservationId is missing', () => {
       const invalid = {
         content: 'Missing target'
       }

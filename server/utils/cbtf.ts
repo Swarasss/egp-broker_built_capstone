@@ -1147,13 +1147,10 @@ export function toCbtfReservationDto(res: any): CbtfReservationDto {
  * Returns live feed of seated roster, arriving students, departures, and facility capacity
  */
 export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: string) {
-  const facility = facilityId
-    ? await prisma.cbtfFacility.findUnique({ where: { id: facilityId } })
-    : await getPrimaryCbtfFacility(prisma)
+  if (!facilityId) return null
 
-  if (!facility) {
-    throw createError({ statusCode: 404, statusMessage: 'No facility found' })
-  }
+  const facility = await prisma.cbtfFacility.findUnique({ where: { id: facilityId } })
+  if (!facility) return null
 
   const now = new Date()
   const graceMinutes = facility.checkInGraceMinutes ?? 15
@@ -1180,6 +1177,7 @@ export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: stri
     },
     include: {
       assignment: { select: { title: true } },
+      facility: { select: { name: true } },
       notes: {
         include: {
           author: { select: { firstName: true, lastName: true } }
@@ -1292,66 +1290,74 @@ export async function lookupStudentForProctor(prisma: PrismaClient, studentId: s
     }
   }
 
-  const facility = await getPrimaryCbtfFacility(prisma)
-  const leadMinutes = facility.checkInLeadMinutes ?? 5
-  const graceMinutes = facility.checkInGraceMinutes ?? 15
   const now = new Date()
-
-  // 1. Check if student is currently seated (ready for checkout)
-  const seatedReservation = await prisma.cbtfReservation.findFirst({
-    where: {
-      userId: user.id,
-      facilityId: facility.id,
-      status: 'CHECKED_IN'
-    },
+  const nowMs = now.getTime()
+  const reservations = await prisma.cbtfReservation.findMany({
+    where: { userId: user.id, status: { in: ['CHECKED_IN', 'SCHEDULED'] } },
     include: {
       assignment: { select: { title: true } },
+      facility: { select: { name: true, checkInLeadMinutes: true, checkInGraceMinutes: true } },
       notes: {
-        include: {
-          author: { select: { firstName: true, lastName: true } }
-        },
+        include: { author: { select: { firstName: true, lastName: true } } },
         orderBy: { createdAt: 'asc' }
       }
     },
-    orderBy: { startTime: 'desc' }
+    orderBy: [{ startTime: 'asc' }, { id: 'asc' }]
   })
 
+  const seated = reservations.filter((reservation) => reservation.status === 'CHECKED_IN').reverse()
+  const scheduled = reservations
+    .filter((reservation) => reservation.status === 'SCHEDULED')
+    .map((reservation) => {
+      const startMs = reservation.startTime.getTime()
+      const leadMinutes = reservation.facility.checkInLeadMinutes ?? 5
+      const graceMinutes = reservation.facility.checkInGraceMinutes ?? 15
+      return {
+        reservation,
+        startMs,
+        leadMinutes,
+        graceMinutes,
+        earliestAllowedMs: startMs - leadMinutes * 60000,
+        latestAllowedMs: startMs + graceMinutes * 60000
+      }
+    })
+
+  // Prefer check-in now, then the next exam, then a late exam that is still in progress.
+  const checkInCandidate =
+    scheduled.find(
+      ({ earliestAllowedMs, latestAllowedMs, reservation }) =>
+        nowMs >= earliestAllowedMs && nowMs <= latestAllowedMs && reservation.endTime >= now
+    ) ??
+    scheduled.find(({ startMs }) => startMs > nowMs) ??
+    [...scheduled].reverse().find(({ reservation }) => reservation.endTime >= now)
+
+  // Preserve checkout for overdue occupants when there is no relevant scheduled exam.
+  const seatedReservation =
+    seated.find((reservation) => reservation.endTime >= now) ??
+    (checkInCandidate ? undefined : seated[0])
+
   if (seatedReservation) {
-    const dto = toCbtfReservationDto({ ...seatedReservation, user })
     return {
       found: true,
       student: user,
-      reservation: dto,
+      reservation: toCbtfReservationDto({ ...seatedReservation, user }),
       decision: 'READY_FOR_CHECKOUT',
+      leadMinutes: seatedReservation.facility.checkInLeadMinutes ?? 5,
+      graceMinutes: seatedReservation.facility.checkInGraceMinutes ?? 15,
       message: 'Student is currently seated and ready for checkout.'
     }
   }
 
-  // 2. Check for scheduled reservation closest to now
-  const scheduledReservation = await prisma.cbtfReservation.findFirst({
-    where: {
-      userId: user.id,
-      facilityId: facility.id,
-      status: 'SCHEDULED'
-    },
-    include: {
-      assignment: { select: { title: true } },
-      notes: {
-        include: {
-          author: { select: { firstName: true, lastName: true } }
-        },
-        orderBy: { createdAt: 'asc' }
-      }
-    },
-    orderBy: { startTime: 'asc' }
-  })
-
-  if (scheduledReservation) {
+  if (checkInCandidate) {
+    const {
+      reservation: scheduledReservation,
+      startMs,
+      leadMinutes,
+      graceMinutes,
+      earliestAllowedMs,
+      latestAllowedMs
+    } = checkInCandidate
     const dto = toCbtfReservationDto({ ...scheduledReservation, user })
-    const startMs = new Date(scheduledReservation.startTime).getTime()
-    const nowMs = now.getTime()
-    const earliestAllowedMs = startMs - leadMinutes * 60000
-    const latestAllowedMs = startMs + graceMinutes * 60000
 
     if (nowMs < earliestAllowedMs) {
       const minutesEarly = Math.ceil((earliestAllowedMs - nowMs) / 60000)
@@ -1386,20 +1392,17 @@ export async function lookupStudentForProctor(prisma: PrismaClient, studentId: s
       decision: 'READY_FOR_CHECKIN',
       leadMinutes,
       graceMinutes,
-      message: `Verified for ${scheduledReservation.assignment?.title || 'Exam'}. Direct to Workstation Seat #${scheduledReservation.seatNumber}.`
+      message: `Verified for ${scheduledReservation.assignment?.title || 'Exam'}. Direct to ${scheduledReservation.facility.name} · Seat #${scheduledReservation.seatNumber}.`
     }
   }
 
-  // 3. Fallback: check recent past reservation
   const pastReservation = await prisma.cbtfReservation.findFirst({
-    where: {
-      userId: user.id,
-      facilityId: facility.id
-    },
+    where: { userId: user.id },
     include: {
-      assignment: { select: { title: true } }
+      assignment: { select: { title: true } },
+      facility: { select: { name: true, checkInLeadMinutes: true, checkInGraceMinutes: true } }
     },
-    orderBy: { updatedAt: 'desc' }
+    orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }]
   })
 
   return {
@@ -1407,6 +1410,8 @@ export async function lookupStudentForProctor(prisma: PrismaClient, studentId: s
     student: user,
     reservation: pastReservation ? toCbtfReservationDto({ ...pastReservation, user }) : null,
     decision: 'NO_ACTIVE_RESERVATION',
+    leadMinutes: pastReservation?.facility.checkInLeadMinutes,
+    graceMinutes: pastReservation?.facility.checkInGraceMinutes,
     message: pastReservation
       ? `No active reservation scheduled for now. Last reservation status: ${pastReservation.status}.`
       : 'No scheduled exam reservations found for this student.'
@@ -1468,6 +1473,7 @@ export async function checkInReservation(
     },
     include: {
       assignment: { select: { title: true } },
+      facility: { select: { name: true } },
       user: {
         select: {
           firstName: true,
@@ -1533,6 +1539,7 @@ export async function checkOutReservation(
     },
     include: {
       assignment: { select: { title: true } },
+      facility: { select: { name: true } },
       notes: {
         include: {
           author: { select: { firstName: true, lastName: true } }
@@ -1570,46 +1577,23 @@ export async function checkOutReservation(
 export async function addReservationNote(
   prisma: PrismaClient,
   data: {
-    reservationId?: string
-    seatNumber?: number
+    reservationId: string
     authorId: string
     content: string
     hasPhotos?: boolean
   }
 ) {
-  let targetReservationId = data.reservationId
-
-  if (!targetReservationId && data.seatNumber) {
-    const facility = await getPrimaryCbtfFacility(prisma)
-    // Locate the active (seated or scheduled) reservation at this seat
-    const activeAtSeat = await prisma.cbtfReservation.findFirst({
-      where: {
-        facilityId: facility.id,
-        seatNumber: data.seatNumber,
-        status: { in: ['CHECKED_IN', 'SCHEDULED'] }
-      },
-      orderBy: { startTime: 'asc' }
-    })
-
-    if (!activeAtSeat) {
-      throw createError({
-        statusCode: 404,
-        statusMessage: `No active reservation found at Workstation Seat #${data.seatNumber}`
-      })
-    }
-    targetReservationId = activeAtSeat.id
-  }
-
-  if (!targetReservationId) {
-    throw createError({
-      statusCode: 400,
-      statusMessage: 'Either reservationId or seatNumber is required'
-    })
+  const reservation = await prisma.cbtfReservation.findUnique({
+    where: { id: data.reservationId },
+    select: { id: true }
+  })
+  if (!reservation) {
+    throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
   }
 
   const note = await prisma.cbtfReservationNote.create({
     data: {
-      reservationId: targetReservationId,
+      reservationId: reservation.id,
       authorId: data.authorId,
       content: data.content.trim(),
       hasPhotos: Boolean(data.hasPhotos)
@@ -1626,6 +1610,7 @@ export async function addReservationNote(
         select: {
           id: true,
           seatNumber: true,
+          facility: { select: { name: true } },
           user: {
             select: {
               firstName: true,
@@ -1642,6 +1627,7 @@ export async function addReservationNote(
     id: note.id,
     reservationId: note.reservationId,
     seatNumber: note.reservation.seatNumber,
+    facilityName: note.reservation.facility.name,
     studentName: `${note.reservation.user.firstName} ${note.reservation.user.lastName}`.trim(),
     authorId: note.authorId,
     authorName: `${note.author.firstName} ${note.author.lastName}`.trim(),

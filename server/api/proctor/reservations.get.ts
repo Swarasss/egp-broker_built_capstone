@@ -62,6 +62,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       where,
       include: {
         assignment: { select: { title: true } },
+        facility: { select: { name: true } },
         user: {
           select: {
             firstName: true,

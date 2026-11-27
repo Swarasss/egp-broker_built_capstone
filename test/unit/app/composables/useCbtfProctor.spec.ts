@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
-import { ref } from 'vue'
+import { nextTick, ref, unref } from 'vue'
 import { useCbtfProctor } from '../../../../app/composables/features/proctor/useCbtfProctor'
 
 const mockToast = {
@@ -8,6 +8,10 @@ const mockToast = {
 vi.stubGlobal('useToast', () => mockToast)
 
 const mockStatusData = ref({ data: { isOnDuty: false } })
+const facilityA = { id: 'fac-1', name: 'Main CBTF', totalSeats: 48 }
+const facilityB = { id: 'fac-2', name: 'Facility B', totalSeats: 30 }
+const mockFacilities = ref({ data: [facilityA, facilityB] })
+let feedQuery: any
 const mockFeedData = ref({
   data: {
     facility: {
@@ -29,7 +33,10 @@ const mockRefreshFeed = vi.fn()
 
 const mockFeedError = ref<any>(null)
 
-vi.stubGlobal('useFetch', (url: string) => {
+vi.stubGlobal('useFetch', (url: string, options?: any) => {
+  if (url === '/api/proctor/facilities') {
+    return { data: mockFacilities, refresh: vi.fn() }
+  }
   if (url === '/api/proctor/status') {
     return {
       data: mockStatusData,
@@ -38,6 +45,7 @@ vi.stubGlobal('useFetch', (url: string) => {
       refresh: mockRefreshStatus
     }
   }
+  feedQuery = options.query
   return { data: mockFeedData, status: ref('idle'), error: mockFeedError, refresh: mockRefreshFeed }
 })
 
@@ -49,10 +57,14 @@ describe('useCbtfProctor Composable', () => {
     vi.clearAllMocks()
     mockStatusData.value = { data: { isOnDuty: false } }
     mockFeedError.value = null
+    mockFacilities.value = { data: [facilityA, facilityB] }
   })
 
   it('computes feed rosters and counts and exposes feedError', () => {
-    const { seated, arriving, counts, facility, isOnDuty, feedError } = useCbtfProctor()
+    const { seated, arriving, counts, facility, isOnDuty, feedError, selectedFacilityId } =
+      useCbtfProctor()
+    expect(seated.value).toEqual([])
+    selectedFacilityId.value = facilityA.id
 
     expect(isOnDuty.value).toBe(false)
     expect(facility.value?.name).toBe('Main CBTF')
@@ -60,6 +72,44 @@ describe('useCbtfProctor Composable', () => {
     expect(seated.value.length).toBe(1)
     expect(arriving.value.length).toBe(1)
     expect(feedError.value).toBeNull()
+  })
+
+  it('sends the selected ID, hides stale rosters, and clears a removed facility selection', async () => {
+    const { facilities, selectedFacilityId, seated } = useCbtfProctor()
+    expect(facilities.value).toEqual([facilityA, facilityB])
+    expect(unref(feedQuery)).toEqual({ facilityId: undefined })
+
+    selectedFacilityId.value = facilityA.id
+    expect(unref(feedQuery)).toEqual({ facilityId: facilityA.id })
+    expect(seated.value[0].studentName).toBe('Alice')
+
+    selectedFacilityId.value = facilityB.id
+    expect(unref(feedQuery)).toEqual({ facilityId: facilityB.id })
+    expect(seated.value).toEqual([])
+    const originalFeed = mockFeedData.value
+    mockFeedData.value = {
+      data: {
+        ...originalFeed.data,
+        facility: { ...originalFeed.data.facility, ...facilityB },
+        seated: [{ id: 'res-b', seatNumber: 10, studentName: 'Bob' }]
+      }
+    }
+    expect(seated.value[0].studentName).toBe('Bob')
+    mockFeedData.value = originalFeed
+
+    mockFacilities.value = {
+      data: [
+        { ...facilityA, name: 'Renamed Facility A' },
+        { id: 'fac-3', name: 'Facility C', totalSeats: 36 }
+      ]
+    }
+    await nextTick()
+    expect(facilities.value.map((facility) => facility.name)).toEqual([
+      'Renamed Facility A',
+      'Facility C'
+    ])
+    expect(selectedFacilityId.value).toBe('')
+    expect(seated.value).toEqual([])
   })
 
   it('toggles duty status', async () => {
@@ -101,7 +151,13 @@ describe('useCbtfProctor Composable', () => {
 
   it('confirms check-in and updates lastAction and feed', async () => {
     mockFetch.mockResolvedValueOnce({
-      data: { id: 'res-1', studentName: 'Alice', seatNumber: 10, status: 'CHECKED_IN' }
+      data: {
+        id: 'res-1',
+        studentName: 'Alice',
+        seatNumber: 10,
+        facilityName: 'Facility A',
+        status: 'CHECKED_IN'
+      }
     })
 
     const { confirmCheckIn, lastAction, lookupResult } = useCbtfProctor()
@@ -115,7 +171,12 @@ describe('useCbtfProctor Composable', () => {
     })
     expect(result.status).toBe('CHECKED_IN')
     expect(lastAction.value?.type).toBe('checkin')
-    expect(lastAction.value?.message).toContain('RETAIN student ID')
+    expect(lastAction.value?.message).toContain('Facility A · Seat #10')
+    expect(mockToast.add).toHaveBeenCalledWith(
+      expect.objectContaining({
+        description: 'Direct to Facility A · Seat #10. RETAIN student ID.'
+      })
+    )
     expect(lookupResult.value).toBeNull()
     expect(mockRefreshFeed).toHaveBeenCalled()
   })
@@ -156,11 +217,11 @@ describe('useCbtfProctor Composable', () => {
     expect(isNoteModalOpen.value).toBe(true)
     expect(selectedNoteTarget.value?.seatNumber).toBe(12)
 
-    await addNote({ seatNumber: 12, content: 'Glancing at neighbor', hasPhotos: true })
+    await addNote({ reservationId: 'res-2', content: 'Glancing at neighbor', hasPhotos: true })
 
     expect(mockFetch).toHaveBeenCalledWith('/api/proctor/notes', {
       method: 'POST',
-      body: { seatNumber: 12, content: 'Glancing at neighbor', hasPhotos: true }
+      body: { reservationId: 'res-2', content: 'Glancing at neighbor', hasPhotos: true }
     })
     expect(mockToast.add).toHaveBeenCalledWith(
       expect.objectContaining({ title: 'Incident Note Logged', color: 'warning' })

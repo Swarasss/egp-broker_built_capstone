@@ -156,21 +156,15 @@ export const createProctorShiftInputSchema = z.object({
   endTime: z.string().datetime()
 })
 
-export const createReservationNoteInputSchema = z
-  .object({
-    reservationId: z.string().min(1).optional(),
-    seatNumber: z.number().int().min(1).optional(),
-    content: z
-      .string()
-      .trim()
-      .min(1, 'Note content cannot be empty')
-      .max(5000, 'Note content cannot exceed 5000 characters'),
-    hasPhotos: z.boolean().default(false)
-  })
-  .refine((data) => Boolean(data.reservationId || data.seatNumber), {
-    message: 'Either reservationId or seatNumber must be provided',
-    path: ['reservationId']
-  })
+export const createReservationNoteInputSchema = z.object({
+  reservationId: z.string().min(1),
+  content: z
+    .string()
+    .trim()
+    .min(1, 'Note content cannot be empty')
+    .max(5000, 'Note content cannot exceed 5000 characters'),
+  hasPhotos: z.boolean().default(false)
+})
 
 export type CreateReservationNoteInput = z.infer<typeof createReservationNoteInputSchema>
 

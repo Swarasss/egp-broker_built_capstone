@@ -35,7 +35,7 @@
                 v-if="targetDisplay.seatNumber"
                 class="px-2 py-0.5 rounded bg-primary-100 dark:bg-primary-950/60 text-primary-700 dark:text-primary-300 font-mono font-bold text-xs"
               >
-                Seat #{{ targetDisplay.seatNumber }}
+                {{ seatLabel(targetDisplay) }}
               </span>
             </div>
             <p v-if="targetDisplay.assignmentTitle" class="text-xs text-neutral-500">
@@ -43,7 +43,7 @@
             </p>
           </div>
           <UButton
-            v-if="allowTargetChange"
+            v-if="!target?.reservationId"
             size="xs"
             variant="ghost"
             color="neutral"
@@ -71,7 +71,7 @@
               Workstation Seat Number:
             </label>
             <USelect
-              v-model="chosenSeat"
+              v-model="chosenReservationId"
               :items="seatOptions"
               placeholder="Select occupied seat..."
               size="sm"
@@ -196,11 +196,13 @@ const props = withDefaults(
     target?: {
       reservationId?: string
       seatNumber?: number
+      facilityName?: string
       studentName?: string
       assignmentTitle?: string
       notes?: any[]
     } | null
     seatedRoster: any[]
+    trainingFacilityName?: string
   }>(),
   {
     modelValue: false,
@@ -214,8 +216,7 @@ const emit = defineEmits<{
   (
     e: 'submit',
     payload: {
-      reservationId?: string
-      seatNumber?: number
+      reservationId: string
       content: string
       hasPhotos: boolean
     }
@@ -231,97 +232,48 @@ const isOpen = computed({
 })
 
 const selectMode = ref<'seat' | 'student'>('seat')
-const chosenSeat = ref<number | null>(null)
 const chosenReservationId = ref<string | null>(null)
 const content = ref('')
 const hasPhotos = ref(false)
 const saving = ref(false)
-const allowTargetChange = ref(false)
 
 const targetDisplay = computed(() => {
-  if (props.target) {
-    return props.target
-  }
-  if (selectMode.value === 'seat' && chosenSeat.value) {
-    const match = props.seatedRoster.find((r) => r.seatNumber === chosenSeat.value)
-    return match
-      ? {
-          reservationId: match.id,
-          seatNumber: match.seatNumber,
-          studentName: match.studentName,
-          assignmentTitle: match.assignmentTitle,
-          notes: match.notes
-        }
-      : { seatNumber: chosenSeat.value }
-  }
-  if (selectMode.value === 'student' && chosenReservationId.value) {
-    const match = props.seatedRoster.find((r) => r.id === chosenReservationId.value)
-    return match
-      ? {
-          reservationId: match.id,
-          seatNumber: match.seatNumber,
-          studentName: match.studentName,
-          assignmentTitle: match.assignmentTitle,
-          notes: match.notes
-        }
-      : null
-  }
-  return null
+  if (props.target?.reservationId) return props.target
+
+  const reservation = props.seatedRoster.find((row) => row.id === chosenReservationId.value)
+  return reservation ? { ...reservation, reservationId: reservation.id } : null
 })
 
-const existingNotes = computed(() => {
-  return targetDisplay.value?.notes || []
-})
+const existingNotes = computed(() => targetDisplay.value?.notes || [])
+const seatLabel = (row: { facilityName?: string; seatNumber: number }) =>
+  `${row.facilityName || props.trainingFacilityName || 'Testing center unavailable'} · Seat #${row.seatNumber}`
 
-const seatOptions = computed(() => {
-  return props.seatedRoster.map((r) => ({
-    label: `Seat #${r.seatNumber} — ${r.studentName || 'Student'} (${r.assignmentTitle || 'Exam'})`,
-    value: r.seatNumber
+const seatOptions = computed(() =>
+  props.seatedRoster.map((row) => ({ label: seatLabel(row), value: row.id }))
+)
+
+const studentOptions = computed(() =>
+  props.seatedRoster.map((row) => ({
+    label: `${row.studentName || 'Student'} (${seatLabel(row)}) — ${row.assignmentTitle || 'Exam'}`,
+    value: row.id
   }))
-})
+)
 
-const studentOptions = computed(() => {
-  return props.seatedRoster.map((r) => ({
-    label: `${r.studentName || 'Student'} (Seat #${r.seatNumber}) — ${r.assignmentTitle || 'Exam'}`,
-    value: r.id
-  }))
-})
-
-const isSubmittable = computed(() => {
-  if (!content.value.trim()) return false
-  if (props.target?.reservationId || props.target?.seatNumber) return true
-  if (selectMode.value === 'seat' && chosenSeat.value) return true
-  if (selectMode.value === 'student' && chosenReservationId.value) return true
-  return false
-})
+const isSubmittable = computed(() =>
+  Boolean(content.value.trim() && targetDisplay.value?.reservationId)
+)
 
 const resetSelectedTarget = () => {
-  chosenSeat.value = null
   chosenReservationId.value = null
-  allowTargetChange.value = false
 }
 
-watch(
-  () => isOpen.value,
-  (val) => {
-    if (val) {
-      content.value = ''
-      hasPhotos.value = false
-      saving.value = false
-      if (props.target?.seatNumber) {
-        chosenSeat.value = props.target.seatNumber
-        allowTargetChange.value = false
-      } else if (props.target?.reservationId) {
-        chosenReservationId.value = props.target.reservationId
-        allowTargetChange.value = false
-      } else {
-        chosenSeat.value = props.seatedRoster[0]?.seatNumber ?? null
-        chosenReservationId.value = props.seatedRoster[0]?.id ?? null
-        allowTargetChange.value = true
-      }
-    }
-  }
-)
+watch(isOpen, (open) => {
+  if (!open) return
+  content.value = ''
+  hasPhotos.value = false
+  saving.value = false
+  chosenReservationId.value = props.target?.reservationId ?? null
+})
 
 const formatNoteTime = (dateStr: string) => {
   if (!dateStr) return ''
@@ -330,29 +282,11 @@ const formatNoteTime = (dateStr: string) => {
 }
 
 const handleSubmit = () => {
-  if (!isSubmittable.value) return
+  const reservationId = targetDisplay.value?.reservationId
+  if (!isSubmittable.value || !reservationId) return
   saving.value = true
 
-  const payload: {
-    reservationId?: string
-    seatNumber?: number
-    content: string
-    hasPhotos: boolean
-  } = {
-    content: content.value.trim(),
-    hasPhotos: hasPhotos.value
-  }
-
-  if (props.target?.reservationId) {
-    payload.reservationId = props.target.reservationId
-  } else if (props.target?.seatNumber) {
-    payload.seatNumber = props.target.seatNumber
-  } else if (selectMode.value === 'seat' && chosenSeat.value) {
-    payload.seatNumber = chosenSeat.value
-  } else if (selectMode.value === 'student' && chosenReservationId.value) {
-    payload.reservationId = chosenReservationId.value
-  }
-
+  const payload = { reservationId, content: content.value.trim(), hasPhotos: hasPhotos.value }
   emit('submit', payload)
 }
 </script>

@@ -77,6 +77,7 @@ describe('Proctor CBTF Reservations API', () => {
         {
           id: 'res-1',
           facilityId: 'fac-1',
+          facility: { name: 'Facility B' },
           assignmentId: 'asg-1',
           userId: 'usr-1',
           seatNumber: 5,
@@ -103,6 +104,10 @@ describe('Proctor CBTF Reservations API', () => {
       expect(res.statusCode).toBe(200)
       expect(res.data?.length).toBe(1)
       expect(res.data?.[0].studentName).toBe('David Miller')
+      expect(res.data?.[0].facilityName).toBe('Facility B')
+      expect(
+        vi.mocked(prisma.cbtfReservation.findMany).mock.calls[0]?.[0]?.where
+      ).not.toHaveProperty('facilityId')
       expect(res.pagination).toEqual({
         total: 1,
         page: 1,

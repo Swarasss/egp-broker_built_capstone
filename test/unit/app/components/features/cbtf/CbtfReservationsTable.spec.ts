@@ -14,6 +14,7 @@ const mockReservations = ref([
   {
     id: 'res-1',
     facilityId: 'fac-1',
+    facilityName: 'Facility B',
     assignmentId: 'asg-1',
     assignmentTitle: 'Algorithms Midterm',
     userId: 'usr-1',
@@ -101,6 +102,8 @@ describe('CbtfReservationsTable.vue', () => {
     expect(wrapper.text()).toContain('alex@vt.edu')
     expect(wrapper.text()).toContain('906888222')
     expect(wrapper.text()).toContain('Algorithms Midterm')
+    expect(wrapper.text()).toContain('Testing Center')
+    expect(wrapper.text()).toContain('Facility B')
     expect(wrapper.text()).toContain('#8')
     expect(wrapper.text()).toContain('#cov-77')
   })

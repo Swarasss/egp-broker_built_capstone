@@ -8,6 +8,7 @@ describe('ProctorNoteModal Component', () => {
     target: {
       reservationId: 'res-1',
       seatNumber: 12,
+      facilityName: 'Facility A',
       studentName: 'Alice Smith',
       assignmentTitle: 'Midterm Exam 1',
       notes: [
@@ -51,7 +52,7 @@ describe('ProctorNoteModal Component', () => {
     const modal = wrapper.find('[data-testid="umodal"]')
     expect(modal.attributes('data-open')).toBe('true')
     expect(wrapper.text()).toContain('Alice Smith')
-    expect(wrapper.text()).toContain('Seat #12')
+    expect(wrapper.text()).toContain('Facility A · Seat #12')
     expect(wrapper.text()).toContain('Midterm Exam 1')
     expect(wrapper.text()).toContain('Student asked for extra scratch paper.')
     expect(wrapper.text()).toContain('John Proctor')
@@ -105,6 +106,64 @@ describe('ProctorNoteModal Component', () => {
     expect(wrapper.emitted('submit')![0][0]).toEqual({
       reservationId: 'res-1',
       content: 'Observed unauthorized device.',
+      hasPhotos: false
+    })
+  })
+  it('targets the selected checked-in reservation when two facilities have the same seat number', async () => {
+    const wrapper = mount(ProctorNoteModal, {
+      props: {
+        open: true,
+        seatedRoster: [
+          {
+            id: 'occupant-a',
+            facilityName: 'Facility A',
+            seatNumber: 6,
+            studentName: 'Alice',
+            status: 'CHECKED_IN'
+          },
+          {
+            id: 'occupant-b',
+            facilityName: 'Facility B',
+            seatNumber: 6,
+            studentName: 'Bob',
+            status: 'CHECKED_IN'
+          }
+        ]
+      },
+      global: {
+        stubs: {
+          UModal: { template: '<div><slot name="content" /><slot /></div>' },
+          UIcon: true,
+          UBadge: true,
+          USelect: {
+            props: ['items'],
+            template: `<select @change="$emit('update:modelValue', $event.target.value)"><option value=""></option><option v-for="item in items" :value="item.value">{{ item.label }}</option></select>`
+          },
+          UTextarea: {
+            template: `<textarea @input="$emit('update:modelValue', $event.target.value)" />`
+          },
+          UButton: { template: `<button @click="$emit('click')">{{ $attrs.label }}</button>` }
+        }
+      }
+    })
+
+    const select = wrapper.get('select')
+    expect(select.findAll('option').map((option) => option.text())).toEqual([
+      '',
+      'Facility A · Seat #6',
+      'Facility B · Seat #6'
+    ])
+    await select.setValue('occupant-b')
+    expect(wrapper.text()).toContain('Bob')
+    expect(wrapper.text()).toContain('Facility B · Seat #6')
+    await wrapper.get('textarea').setValue('Incident')
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'Save Note')!
+      .trigger('click')
+    expect(wrapper.emitted('submit')?.[0]?.[0]).toEqual({
+      reservationId: 'occupant-b',
+      content: 'Incident',
       hasPhotos: false
     })
   })

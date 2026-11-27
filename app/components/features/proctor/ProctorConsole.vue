@@ -136,6 +136,23 @@
         </div>
       </div>
 
+      <div v-if="!isTraining" class="space-y-1">
+        <label for="proctor-facility" class="block text-xs font-semibold">Testing Center</label>
+        <select
+          id="proctor-facility"
+          v-model="selectedFacilityId"
+          class="rounded-md border border-neutral-300 bg-white px-2 py-1 text-sm dark:border-neutral-700 dark:bg-neutral-900"
+        >
+          <option value="">Select a testing center</option>
+          <option v-for="option in facilities" :key="option.id" :value="option.id">
+            {{ option.name }}
+          </option>
+        </select>
+        <p v-if="!selectedFacilityId" class="text-xs text-neutral-500" role="status">
+          {{ facilities.length ? 'Select a testing center to view its live roster.' : 'No testing centers available.' }}
+        </p>
+      </div>
+
       <!-- Quick KPI Counters & Duty Toggle -->
       <div class="flex items-center gap-4">
         <div class="hidden md:flex items-center gap-3">
@@ -333,7 +350,7 @@
                       v-if="lookupResult.reservation?.seatNumber"
                       class="px-2.5 py-1 rounded-md bg-primary-600 text-white font-mono font-bold text-xs shadow-sm"
                     >
-                      Seat #{{ lookupResult.reservation.seatNumber }}
+                      {{ seatLabel(lookupResult.reservation) }}
                     </div>
                   </div>
 
@@ -408,6 +425,7 @@
                     proctorState.openNoteModal({
                       reservationId: lookupResult.reservation.id,
                       seatNumber: lookupResult.reservation.seatNumber,
+                      facilityName: lookupResult.reservation.facilityName,
                       studentName:
                         `${lookupResult.student?.firstName} ${lookupResult.student?.lastName}`.trim(),
                       assignmentTitle: lookupResult.reservation.assignmentTitle,
@@ -429,7 +447,7 @@
                   :label="
                     lookupResult.decision === 'LATE'
                       ? 'Override & Check In'
-                      : 'Confirm Check-In (Enter)'
+                      : 'Confirm Check-In'
                   "
                   @click="handleCheckInConfirm"
                 />
@@ -441,7 +459,7 @@
                   color="primary"
                   icon="i-lucide-log-out"
                   :loading="lookupLoading"
-                  label="Confirm Check-Out (Enter)"
+                  label="Confirm Check-Out"
                   @click="handleCheckOutConfirm"
                 />
               </div>
@@ -573,6 +591,7 @@
       :open="isNoteModalOpen"
       :target="selectedNoteTarget"
       :seated-roster="seatedRoster"
+      :training-facility-name="isTraining ? facilityName : undefined"
       @update:open="handleNoteModalUpdate"
       @update:model-value="handleNoteModalUpdate"
       @submit="handleSaveNote"
@@ -581,7 +600,7 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, nextTick, h, resolveComponent } from 'vue'
+import { ref, computed, onMounted, onUnmounted, nextTick, h, resolveComponent, watch } from 'vue'
 
 const props = withDefaults(
   defineProps<{
@@ -601,6 +620,17 @@ const unwrapState = <T,>(val: any): T => {
 }
 
 const currentFacility = computed(() => unwrapState<any>(props.proctorState.facility))
+const facilities = computed(
+  () => unwrapState<{ id: string; name: string }[]>(props.proctorState.facilities) ?? []
+)
+const selectedFacilityId = computed({
+  get: () => unwrapState<string>(props.proctorState.selectedFacilityId) ?? '',
+  set: (id: string) => {
+    props.proctorState.selectedFacilityId.value = id
+  }
+})
+const seatLabel = (reservation: { seatNumber: number; facilityName?: string }) =>
+  `${reservation.facilityName || (props.isTraining ? currentFacility.value?.name : null) || 'Testing center unavailable'} · Seat #${reservation.seatNumber}`
 const totalSeats = computed(() => currentFacility.value?.totalSeats ?? '—')
 const facilityName = computed(() => currentFacility.value?.name || 'Testing Center Console')
 
@@ -672,35 +702,28 @@ const clearAndRefocus = () => {
   })
 }
 
-const handleSwipeSubmit = async () => {
-  const res = lookupResult.value
-  if (res) {
-    if (res.decision === 'READY_FOR_CHECKIN' || res.decision === 'LATE') {
-      await handleCheckInConfirm()
-      return
-    }
-    if (res.decision === 'READY_FOR_CHECKOUT') {
-      await handleCheckOutConfirm()
-      return
-    }
-  }
+watch(rawSwipeInput, (input) => {
+  if (input) props.proctorState.clearLookup()
+})
 
-  if (!rawSwipeInput.value) return
-  await props.proctorState.lookupStudent(rawSwipeInput.value)
+const handleSwipeSubmit = async () => {
+  if (!rawSwipeInput.value.trim() || lookupLoading.value) return
+  const input = rawSwipeInput.value
   rawSwipeInput.value = ''
+  await props.proctorState.lookupStudent(input)
 }
 
 const handleCheckInConfirm = async () => {
-  const resId = lookupResult.value?.reservation?.id
-  if (!resId) return
-  await props.proctorState.confirmCheckIn(resId, lookupResult.value?.student?.studentId)
+  const result = lookupResult.value
+  if (rawSwipeInput.value || lookupLoading.value || !result?.reservation?.id) return
+  await props.proctorState.confirmCheckIn(result.reservation.id, result.student?.studentId)
   clearAndRefocus()
 }
 
 const handleCheckOutConfirm = async () => {
-  const resId = lookupResult.value?.reservation?.id
-  if (!resId) return
-  await props.proctorState.confirmCheckOut(resId, lookupResult.value?.student?.studentId)
+  const result = lookupResult.value
+  if (rawSwipeInput.value || lookupLoading.value || !result?.reservation?.id) return
+  await props.proctorState.confirmCheckOut(result.reservation.id, result.student?.studentId)
   clearAndRefocus()
 }
 
@@ -711,8 +734,7 @@ const handleNoteModalUpdate = (val: boolean) => {
 }
 
 const handleSaveNote = async (payload: {
-  reservationId?: string
-  seatNumber?: number
+  reservationId: string
   content: string
   hasPhotos: boolean
 }) => {
@@ -736,7 +758,7 @@ const seatedColumns: any[] = [
           class:
             'px-2 py-1 rounded bg-primary-100 dark:bg-primary-950/60 font-mono font-bold text-primary-700 dark:text-primary-300'
         },
-        `#${row.original.seatNumber}`
+        seatLabel(row.original)
       )
   },
   {
@@ -803,6 +825,7 @@ const seatedColumns: any[] = [
             props.proctorState.openNoteModal({
               reservationId: row.original.id,
               seatNumber: row.original.seatNumber,
+              facilityName: row.original.facilityName,
               studentName: row.original.studentName,
               assignmentTitle: row.original.assignmentTitle,
               notes: row.original.notes
@@ -833,7 +856,7 @@ const arrivingColumns: any[] = [
               class:
                 'px-2 py-1 rounded bg-primary-100 dark:bg-primary-950/60 font-mono font-bold text-primary-700 dark:text-primary-300'
             },
-            `#${row.original.seatNumber}`
+            seatLabel(row.original)
           )
         : h('span', { class: 'font-mono text-neutral-400' }, '—')
   },
@@ -881,6 +904,7 @@ const arrivingColumns: any[] = [
             props.proctorState.openNoteModal({
               reservationId: row.original.id,
               seatNumber: row.original.seatNumber,
+              facilityName: row.original.facilityName,
               studentName: row.original.studentName,
               assignmentTitle: row.original.assignmentTitle,
               notes: row.original.notes
@@ -911,7 +935,7 @@ const departureColumns: any[] = [
               class:
                 'px-2 py-1 rounded bg-primary-100 dark:bg-primary-950/60 font-mono font-bold text-primary-700 dark:text-primary-300'
             },
-            `#${row.original.seatNumber}`
+            seatLabel(row.original)
           )
         : h('span', { class: 'font-mono text-neutral-400' }, '—')
   },
@@ -951,6 +975,7 @@ const departureColumns: any[] = [
             props.proctorState.openNoteModal({
               reservationId: row.original.id,
               seatNumber: row.original.seatNumber,
+              facilityName: row.original.facilityName,
               studentName: row.original.studentName,
               assignmentTitle: row.original.assignmentTitle,
               notes: row.original.notes

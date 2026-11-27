@@ -1,5 +1,6 @@
-import { ref, computed, onMounted, onUnmounted, getCurrentInstance } from 'vue'
+import { ref, computed, onMounted, onUnmounted, getCurrentInstance, watch } from 'vue'
 import type { ApiResponse } from '@@/shared/types/api'
+import type { CbtfFacilitySummary } from '@@/shared/models/cbtf'
 import { parseCardSwipe } from '~/utils/cardSwipe'
 
 export function useCbtfProctor() {
@@ -8,6 +9,18 @@ export function useCbtfProctor() {
   const { data: statusData, refresh: refreshStatus } =
     useFetch<ApiResponse<{ isOnDuty: boolean }>>('/api/proctor/status')
 
+  const selectedFacilityId = ref('')
+  const { data: facilitiesData, refresh: refreshFacilities } = useFetch<
+    ApiResponse<Pick<CbtfFacilitySummary, 'id' | 'name' | 'timezone' | 'totalSeats'>[]>
+  >('/api/proctor/facilities', { cache: 'no-store' })
+  const facilities = computed(() => facilitiesData.value?.data ?? [])
+
+  watch(facilitiesData, (response) => {
+    if (response && !response.data.some(({ id }) => id === selectedFacilityId.value)) {
+      selectedFacilityId.value = ''
+    }
+  })
+
   const {
     data: feedData,
     status: feedStatus,
@@ -15,17 +28,23 @@ export function useCbtfProctor() {
     refresh: refreshFeed
   } = useFetch<ApiResponse<any>>('/api/proctor/feed', {
     key: 'cbtf-proctor-feed',
+    query: computed(() => ({ facilityId: selectedFacilityId.value || undefined })),
     getCachedData: () => undefined
   })
 
   const isOnDuty = computed(() => Boolean(statusData.value?.data?.isOnDuty))
-  const facility = computed(() => feedData.value?.data?.facility)
+  // A response for the previous selection can remain visible while the next request loads.
+  const currentFeed = computed(() => {
+    const feed = feedData.value?.data
+    return selectedFacilityId.value && feed?.facility?.id === selectedFacilityId.value ? feed : null
+  })
+  const facility = computed(() => currentFeed.value?.facility)
   const counts = computed(
-    () => feedData.value?.data?.counts || { seated: 0, arriving: 0, departures: 0 }
+    () => currentFeed.value?.counts || { seated: 0, arriving: 0, departures: 0 }
   )
-  const seated = computed(() => feedData.value?.data?.seated || [])
-  const arriving = computed(() => feedData.value?.data?.arriving || [])
-  const departures = computed(() => feedData.value?.data?.departures || [])
+  const seated = computed(() => currentFeed.value?.seated || [])
+  const arriving = computed(() => currentFeed.value?.arriving || [])
+  const departures = computed(() => currentFeed.value?.departures || [])
 
   const lookupResult = ref<any | null>(null)
   const lookupLoading = ref(false)
@@ -38,7 +57,8 @@ export function useCbtfProctor() {
   if (getCurrentInstance()) {
     onMounted(() => {
       pollInterval = setInterval(() => {
-        refreshFeed()
+        refreshFacilities()
+        if (selectedFacilityId.value) refreshFeed()
       }, 15000)
     })
 
@@ -109,17 +129,17 @@ export function useCbtfProctor() {
       })
 
       const studentName = res.data.studentName || 'Student'
-      const seat = res.data.seatNumber
+      const workstation = `${res.data.facilityName || 'Testing center unavailable'} · Seat #${res.data.seatNumber}`
 
       lastAction.value = {
-        message: `Checked in ${studentName} to Seat #${seat}. RETAIN student ID while testing.`,
+        message: `Checked in ${studentName} to ${workstation}. RETAIN student ID while testing.`,
         type: 'checkin',
         time: new Date()
       }
 
       toast.add({
         title: `Checked In: ${studentName}`,
-        description: `Direct to Workstation Seat #${seat}. RETAIN student ID.`,
+        description: `Direct to ${workstation}. RETAIN student ID.`,
         color: 'success'
       })
 
@@ -185,6 +205,7 @@ export function useCbtfProctor() {
   const selectedNoteTarget = ref<{
     reservationId?: string
     seatNumber?: number
+    facilityName?: string
     studentName?: string
     assignmentTitle?: string
     notes?: any[]
@@ -193,6 +214,7 @@ export function useCbtfProctor() {
   const openNoteModal = (target?: {
     reservationId?: string
     seatNumber?: number
+    facilityName?: string
     studentName?: string
     assignmentTitle?: string
     notes?: any[]
@@ -207,8 +229,7 @@ export function useCbtfProctor() {
   }
 
   const addNote = async (payload: {
-    reservationId?: string
-    seatNumber?: number
+    reservationId: string
     content: string
     hasPhotos?: boolean
   }) => {
@@ -219,7 +240,7 @@ export function useCbtfProctor() {
       })
       toast.add({
         title: 'Incident Note Logged',
-        description: `Note saved for Seat #${res.data.seatNumber || payload.seatNumber || '—'} (${res.data.studentName || 'Student'}).`,
+        description: `Note saved for ${res.data.facilityName || 'Testing center unavailable'} · Seat #${res.data.seatNumber} (${res.data.studentName || 'Student'}).`,
         color: 'warning'
       })
       await refreshFeed()
@@ -251,6 +272,8 @@ export function useCbtfProctor() {
     isOnDuty,
     toggleDuty,
     facility,
+    facilities,
+    selectedFacilityId,
     counts,
     seated,
     arriving,
