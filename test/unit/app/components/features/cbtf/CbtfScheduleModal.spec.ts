@@ -27,6 +27,7 @@ describe('CbtfScheduleModal', () => {
 
   const mockExistingReservation: CbtfReservationDto = {
     id: 'res-1',
+    facilityId: 'fac-1',
     userId: 'user-1',
     assignmentId: 'asg-cbtf-1',
     assignmentTitle: 'Midterm Exam',
@@ -142,20 +143,55 @@ describe('CbtfScheduleModal', () => {
     expect(wrapper.emitted('reserved')?.[0]).toEqual([result])
   })
 
-  it('renders Mode A: current reservation view when existingReservation is present', () => {
+  it('shows the current reservation testing center, exam interval, and workstation', () => {
+    const startTime = '2026-11-30T13:45:00.000Z'
+    const endTime = '2026-11-30T15:45:00.000Z'
     const wrapper = mount(CbtfScheduleModal, {
       props: {
         open: true,
         assignment: mockAssignment,
-        existingReservation: mockExistingReservation
+        existingReservation: {
+          ...mockExistingReservation,
+          facilityName: 'Main CBTF Facility',
+          startTime,
+          endTime,
+          seatNumber: 6
+        }
       },
       global: { stubs }
     })
 
     expect(wrapper.text()).toContain('Current Reservation')
-    expect(wrapper.text()).toContain('Workstation Seat #12')
+    expect(wrapper.findAll('dt').map((label) => label.text())).toEqual([
+      'Testing Center',
+      'Exam Time',
+      'Seat'
+    ])
+    const date = new Intl.DateTimeFormat(undefined, {
+      weekday: 'short',
+      month: 'short',
+      day: 'numeric'
+    })
+    const time = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' })
+    const start = new Date(startTime)
+    expect(wrapper.findAll('dd').map((value) => value.text())).toEqual([
+      'Main CBTF Facility',
+      `${date.format(start)}, ${time.format(start)} – ${time.format(new Date(endTime))}`,
+      'Workstation #6'
+    ])
     expect(wrapper.text()).toContain('Reschedule Exam')
     expect(wrapper.text()).toContain('Cancel Reservation')
+  })
+
+  it('shows a fallback when the current reservation has no facility name', () => {
+    const wrapper = mount(CbtfScheduleModal, {
+      props: { open: true, assignment: mockAssignment, existingReservation: mockExistingReservation },
+      global: { stubs }
+    })
+
+    expect(wrapper.text()).toContain('Testing center unavailable')
+    expect(wrapper.text()).toContain('Workstation #12')
+    expect(wrapper.text()).toContain('Reschedule Exam')
   })
 
   it('shows reassurance banner and "Keep Current Reservation" when rescheduling with no open slots', async () => {
@@ -210,7 +246,7 @@ describe('CbtfScheduleModal', () => {
 
     // Should return to Mode A
     expect(wrapper.text()).toContain('Current Reservation')
-    expect(wrapper.text()).toContain('Workstation Seat #12')
+    expect(wrapper.text()).toContain('Workstation #12')
     expect(wrapper.text()).toContain('Reschedule Exam')
     expect(mockRescheduleReservation).not.toHaveBeenCalled()
   })

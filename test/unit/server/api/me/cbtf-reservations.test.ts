@@ -225,7 +225,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
   })
 
   describe('GET /api/me/cbtf/reservations', () => {
-    it('returns student reservations mapped to DTOs', async () => {
+    it('returns student reservations with the facility name', async () => {
       const event = mockEvent({ id: 'usr-1', globalRole: 'USER' })
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
         {
@@ -238,6 +238,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
           endTime: new Date('2026-10-05T10:00:00.000Z'),
           status: 'SCHEDULED',
           assignment: { title: 'Midterm Exam' },
+          facility: { name: 'Main CBTF Facility' },
           user: { firstName: 'Demo', lastName: 'User', studentId: '906000001', avatarUrl: null },
           checkedInAt: null,
           checkedOutAt: null,
@@ -247,10 +248,17 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       ] as any)
 
       const response = await reservationsGet(event)
+      expect(prisma.cbtfReservation.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { userId: 'usr-1' },
+          include: expect.objectContaining({ facility: { select: { name: true } } })
+        })
+      )
       expect(response.statusCode).toBe(200)
       expect(response.data.length).toBe(1)
       expect(response.data[0].seatNumber).toBe(3)
       expect(response.data[0].assignmentTitle).toBe('Midterm Exam')
+      expect(response.data[0].facilityName).toBe('Main CBTF Facility')
     })
   })
 

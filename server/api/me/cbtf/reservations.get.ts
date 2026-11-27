@@ -14,6 +14,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     where: { userId: session.user.id },
     include: {
       assignment: { select: { title: true } },
+      facility: { select: { name: true } },
       user: { select: { firstName: true, lastName: true, studentId: true, avatarUrl: true } }
     },
     orderBy: { startTime: 'desc' }

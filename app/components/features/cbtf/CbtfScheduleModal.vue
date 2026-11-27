@@ -19,25 +19,26 @@
             </UBadge>
           </div>
 
-          <div class="space-y-1">
-            <p class="text-lg font-bold text-neutral-900 dark:text-neutral-100">
-              {{ assignment?.title || existingReservation.assignmentTitle }}
-            </p>
-            <p class="text-sm text-neutral-600 dark:text-neutral-400">
-              {{
-                formatReservationTime(existingReservation.startTime, existingReservation.endTime)
-              }}
-            </p>
-          </div>
+          <p class="text-lg font-bold text-neutral-900 dark:text-neutral-100">
+            {{ assignment?.title || existingReservation.assignmentTitle }}
+          </p>
 
-          <div
-            class="flex items-center gap-2 pt-2 border-t border-neutral-200 dark:border-neutral-800"
-          >
-            <UIcon name="i-lucide-armchair" class="w-5 h-5 text-primary-500" />
-            <span class="text-sm font-semibold text-neutral-800 dark:text-neutral-200">
-              Workstation Seat #{{ existingReservation.seatNumber }}
-            </span>
-          </div>
+          <dl class="space-y-3 text-sm text-neutral-800 dark:text-neutral-200">
+            <div>
+              <dt class="font-semibold">Testing Center</dt>
+              <dd>{{ existingReservation.facilityName || 'Testing center unavailable' }}</dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Exam Time</dt>
+              <dd>
+                {{ formatReservationTime(existingReservation.startTime, existingReservation.endTime) }}
+              </dd>
+            </div>
+            <div>
+              <dt class="font-semibold">Seat</dt>
+              <dd>Workstation #{{ existingReservation.seatNumber }}</dd>
+            </div>
+          </dl>
         </div>
 
         <div
