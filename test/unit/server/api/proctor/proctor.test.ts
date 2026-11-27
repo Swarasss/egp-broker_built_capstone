@@ -26,6 +26,9 @@ vi.mock('@@/server/utils/db', () => ({
     },
     cbtfReservationNote: {
       count: vi.fn().mockResolvedValue(0)
+    },
+    cbtfSeatStatus: {
+      findMany: vi.fn().mockResolvedValue([])
     }
   }
 }))
@@ -560,25 +563,45 @@ describe('API: Proctor Operations Endpoints', () => {
 
     it('rejects check-in when scanned student ID does not match the reservation', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1', status: 'SCHEDULED',
+        id: 'res-1',
+        status: 'SCHEDULED',
         user: { studentId: '906000001' }
       } as any)
 
-      await expect(checkInPost(mockEvent('PROCTOR', {}, {
-        reservationId: 'res-1', studentId: '906000999'
-      }))).rejects.toThrow('Student ID does not match this reservation')
+      await expect(
+        checkInPost(
+          mockEvent(
+            'PROCTOR',
+            {},
+            {
+              reservationId: 'res-1',
+              studentId: '906000999'
+            }
+          )
+        )
+      ).rejects.toThrow('Student ID does not match this reservation')
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
 
     it('rejects checkout when scanned student ID does not match the reservation', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1', status: 'CHECKED_IN',
+        id: 'res-1',
+        status: 'CHECKED_IN',
         user: { studentId: '906000001' }
       } as any)
 
-      await expect(checkOutPost(mockEvent('PROCTOR', {}, {
-        reservationId: 'res-1', studentId: '906000999'
-      }))).rejects.toThrow('Student ID does not match this reservation')
+      await expect(
+        checkOutPost(
+          mockEvent(
+            'PROCTOR',
+            {},
+            {
+              reservationId: 'res-1',
+              studentId: '906000999'
+            }
+          )
+        )
+      ).rejects.toThrow('Student ID does not match this reservation')
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
 

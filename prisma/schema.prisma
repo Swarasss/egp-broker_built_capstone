@@ -635,6 +635,13 @@ model CbtfFacility {
   /// IANA Timezone for facility operating hours and local scheduling (default: America/New_York)
   timezone            String   @default("America/New_York")
 
+  /// Number of seats kept open as spare capacity. Null = auto (10% of totalSeats, minimum 1).
+  spareSeatCount           Int?
+  /// Auto-derived seat numbers kept open for reassignment and excluded from student scheduling.
+  spareSeatNumbers         Json     @default("[]")
+  /// Minutes before a reservation starts when an at-risk booking is moved off a disabled seat.
+  reassignThresholdMinutes Int      @default(60)
+
   createdAt           DateTime @default(now())
   updatedAt           DateTime @updatedAt
 
@@ -643,6 +650,7 @@ model CbtfFacility {
   proctorShifts       CbtfProctorShift[]
   reservations        CbtfReservation[]
   seats               CbtfSeat[]
+  seatStatuses        CbtfSeatStatus[]
 }
 
 /// Certified properties for a physical seat in a CBTF facility.
@@ -657,6 +665,26 @@ model CbtfSeat {
 
   createdAt  DateTime     @default(now())
   updatedAt  DateTime     @updatedAt
+
+  @@unique([facilityId, seatNumber])
+  @@index([facilityId])
+}
+
+/// Service state for a physical workstation. A missing row means the seat is in service.
+model CbtfSeatStatus {
+  id          String       @id @default(cuid())
+  facilityId  String
+  facility    CbtfFacility @relation(fields: [facilityId], references: [id], onDelete: Cascade)
+  seatNumber  Int
+  /// When true the seat is out of service and excluded from all scheduling.
+  isDisabled  Boolean      @default(true)
+  reason      String?
+  disabledAt  DateTime     @default(now())
+  /// User who last changed this seat's service state.
+  updatedById String?
+
+  createdAt   DateTime     @default(now())
+  updatedAt   DateTime     @updatedAt
 
   @@unique([facilityId, seatNumber])
   @@index([facilityId])

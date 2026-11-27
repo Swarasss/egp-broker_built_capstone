@@ -11,7 +11,8 @@ import type {
   CbtfProctorShift,
   CbtfReservation,
   CbtfReservationStatus,
-  CbtfReservationNote
+  CbtfReservationNote,
+  CbtfSeatStatus
 } from '@prisma/client'
 
 export type {
@@ -21,7 +22,8 @@ export type {
   CbtfProctorShift,
   CbtfReservation,
   CbtfReservationStatus,
-  CbtfReservationNote
+  CbtfReservationNote,
+  CbtfSeatStatus
 }
 
 export interface CbtfFacilitySummary {
@@ -32,6 +34,9 @@ export interface CbtfFacilitySummary {
   checkInLeadMinutes?: number
   checkInGraceMinutes?: number
   timezone?: string
+  spareSeatCount?: number | null
+  spareSeatNumbers?: number[]
+  reassignThresholdMinutes?: number
   createdAt: string
   updatedAt: string
 }
@@ -76,6 +81,8 @@ export interface CbtfReservationDto {
   studentId?: string | null
   studentAvatarUrl?: string | null
   seatNumber: number
+  /** True when this reservation's seat is currently out of service (needs staff attention). */
+  seatOutOfService?: boolean
   startTime: string
   endTime: string
   status: CbtfReservationStatus
@@ -157,6 +164,48 @@ export interface CbtfSeatMapResponse {
   facilityName: string
   totalSeats: number
   seats: CbtfSeatDto[]
+}
+
+/** Service state of a physical workstation as shown to staff. */
+export type CbtfSeatState = 'IN_SERVICE' | 'OUT_OF_SERVICE' | 'SPARE'
+
+export interface CbtfSeatStatusDto {
+  seatNumber: number
+  state: CbtfSeatState
+  reason: string | null
+  disabledAt: string | null
+}
+
+export interface CbtfWorkstationCounts {
+  total: number
+  working: number
+  available: number
+  spare: number
+  spareAvailable: number
+  outOfService: number
+}
+
+export interface CbtfWorkstationSummary {
+  facilityId: string
+  facilityName: string
+  totalSeats: number
+  spareSeatCount: number
+  spareSeatNumbers: number[]
+  reassignThresholdMinutes: number
+  counts: CbtfWorkstationCounts
+  seats: CbtfSeatStatusDto[]
+}
+
+/** A reservation sitting on an out-of-service seat that needs staff attention. */
+export interface CbtfAtRiskReservationDto {
+  reservationId: string
+  seatNumber: number
+  userId: string
+  studentName: string
+  assignmentTitle: string
+  startTime: string
+  endTime: string
+  status: CbtfReservationStatus
 }
 
 /** Effective SSD accommodation for a student. */

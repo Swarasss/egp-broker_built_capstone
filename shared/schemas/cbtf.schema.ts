@@ -26,7 +26,11 @@ export const cbtfFacilityConfigSchema = z.object({
     .min(1, 'Seat allocation order must not be empty'),
   checkInLeadMinutes: z.number().int().min(0).max(60).default(5),
   checkInGraceMinutes: z.number().int().min(0).max(60).default(15),
-  timezone: z.string().min(1).default('America/New_York')
+  timezone: z.string().min(1).default('America/New_York'),
+  // Null = auto (10% of totalSeats, minimum 1).
+  spareSeatCount: z.number().int().min(0).max(500).nullable().optional(),
+  // Minutes before a reservation starts when an at-risk booking is moved off a disabled seat.
+  reassignThresholdMinutes: z.number().int().min(0).max(1440).optional()
 })
 
 export const cbtfOperatingHoursInputSchema = z
@@ -325,7 +329,11 @@ export const updateCbtfSeatsInputSchema = z.object({
 export type UpdateCbtfSeatsInput = z.infer<typeof updateCbtfSeatsInputSchema>
 
 export const cbtfAccommodationInputSchema = z.object({
-  timeMultiplier: z.number().min(1, 'Multiplier must be at least 1.0').max(3, 'Multiplier cannot exceed 3.0').default(1),
+  timeMultiplier: z
+    .number()
+    .min(1, 'Multiplier must be at least 1.0')
+    .max(3, 'Multiplier cannot exceed 3.0')
+    .default(1),
   requiredSeatProperties: z.array(cbtfSeatPropertyEnum).max(20).default([]),
   notes: z.string().trim().max(500).nullable().optional()
 })
@@ -335,3 +343,41 @@ export type CbtfAccommodationInput = z.infer<typeof cbtfAccommodationInputSchema
 export const cbtfAccommodationSearchSchema = z.object({
   search: z.string().trim().max(200).optional()
 })
+
+export const cbtfWorkstationQuerySchema = z.object({
+  facilityId: z.string().min(1).optional()
+})
+
+export type CbtfWorkstationQuery = z.infer<typeof cbtfWorkstationQuerySchema>
+
+export const cbtfSeatOutOfServiceInputSchema = z.object({
+  facilityId: z.string().min(1, 'Facility is required'),
+  reason: z.string().trim().max(500).optional()
+})
+
+export type CbtfSeatOutOfServiceInput = z.infer<typeof cbtfSeatOutOfServiceInputSchema>
+
+export const cbtfSeatReturnToServiceInputSchema = z.object({
+  facilityId: z.string().min(1, 'Facility is required')
+})
+
+export type CbtfSeatReturnToServiceInput = z.infer<typeof cbtfSeatReturnToServiceInputSchema>
+
+export const cbtfSpareSeatConfigInputSchema = z
+  .object({
+    facilityId: z.string().min(1, 'Facility is required'),
+    spareSeatCount: z.number().int().min(0).max(500).nullable().optional(),
+    reset: z.boolean().optional()
+  })
+  .refine((data) => data.reset === true || data.spareSeatCount !== undefined, {
+    message: 'Provide spareSeatCount or set reset to true',
+    path: ['spareSeatCount']
+  })
+
+export type CbtfSpareSeatConfigInput = z.infer<typeof cbtfSpareSeatConfigInputSchema>
+
+export const cbtfMoveSeatInputSchema = z.object({
+  targetSeatNumber: z.number().int().min(1).max(500).optional()
+})
+
+export type CbtfMoveSeatInput = z.infer<typeof cbtfMoveSeatInputSchema>
