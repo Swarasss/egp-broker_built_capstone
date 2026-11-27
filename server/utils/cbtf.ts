@@ -1874,26 +1874,42 @@ export async function checkInReservation(
     })
   }
 
-  const updated = await prisma.cbtfReservation.update({
-    where: { id: reservationId },
-    data: {
-      status: 'CHECKED_IN',
-      checkedInAt: new Date(),
-      checkedInByUserId: proctorUserId
-    },
-    include: {
-      assignment: { select: { title: true } },
-      facility: { select: { name: true } },
-      user: {
-        select: {
-          firstName: true,
-          lastName: true,
-          studentId: true,
-          avatarUrl: true
+  const updated = await prisma.cbtfReservation
+    .update({
+      where: {
+        id: reservationId,
+        status: 'SCHEDULED',
+        facilityId: reservation.facilityId,
+        seatNumber: reservation.seatNumber
+      },
+      data: {
+        status: 'CHECKED_IN',
+        checkedInAt: new Date(),
+        checkedInByUserId: proctorUserId
+      },
+      include: {
+        assignment: { select: { title: true } },
+        facility: { select: { name: true } },
+        user: {
+          select: {
+            firstName: true,
+            lastName: true,
+            studentId: true,
+            avatarUrl: true
+          }
         }
       }
-    }
-  })
+    })
+    .catch((error) => {
+      if (error?.code === 'P2025') {
+        throw createError({
+          statusCode: 409,
+          statusMessage:
+            'Reservation status or seat assignment has changed. Please look up the student again.'
+        })
+      }
+      throw error
+    })
 
   return toCbtfReservationDto(updated)
 }
@@ -1940,32 +1956,45 @@ export async function checkOutReservation(
     })
   }
 
-  const updated = await prisma.cbtfReservation.update({
-    where: { id: reservationId },
-    data: {
-      status: 'CHECKED_OUT',
-      checkedOutAt: new Date(),
-      checkedOutByUserId: proctorUserId
-    },
-    include: {
-      assignment: { select: { title: true } },
-      facility: { select: { name: true } },
-      notes: {
-        include: {
-          author: { select: { firstName: true, lastName: true } }
-        },
-        orderBy: { createdAt: 'asc' }
+  const updated = await prisma.cbtfReservation
+    .update({
+      where: {
+        id: reservationId,
+        status: 'CHECKED_IN'
       },
-      user: {
-        select: {
-          firstName: true,
-          lastName: true,
-          studentId: true,
-          avatarUrl: true
+      data: {
+        status: 'CHECKED_OUT',
+        checkedOutAt: new Date(),
+        checkedOutByUserId: proctorUserId
+      },
+      include: {
+        assignment: { select: { title: true } },
+        facility: { select: { name: true } },
+        notes: {
+          include: {
+            author: { select: { firstName: true, lastName: true } }
+          },
+          orderBy: { createdAt: 'asc' }
+        },
+        user: {
+          select: {
+            firstName: true,
+            lastName: true,
+            studentId: true,
+            avatarUrl: true
+          }
         }
       }
-    }
-  })
+    })
+    .catch((error) => {
+      if (error?.code === 'P2025') {
+        throw createError({
+          statusCode: 409,
+          statusMessage: 'Reservation status has changed. Please look up the student again.'
+        })
+      }
+      throw error
+    })
 
   // Trigger incident email notification if any notes exist for this test session
   const noteCount =

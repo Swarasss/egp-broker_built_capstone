@@ -566,7 +566,12 @@ describe('API: Proctor Operations Endpoints', () => {
         expect(res.data.status).toBe('CHECKED_IN')
         expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: { id: 'res-1' },
+            where: {
+              id: 'res-1',
+              status: 'SCHEDULED',
+              facilityId,
+              seatNumber: 10
+            },
             data: expect.objectContaining({
               status: 'CHECKED_IN',
               checkedInByUserId: 'proctor-1'
@@ -645,6 +650,57 @@ describe('API: Proctor Operations Endpoints', () => {
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
 
+    it.each([
+      { handler: checkInPost, status: 'SCHEDULED' },
+      { handler: checkOutPost, status: 'CHECKED_IN' }
+    ])('rejects concurrent reservation changes from $status', async ({ handler, status }) => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1',
+        status,
+        seatNumber: 10,
+        facilityId: 'fac-a',
+        assignment: { title: 'Midterm' },
+        user: {
+          firstName: 'Alice',
+          lastName: 'A',
+          studentId: '906000001',
+          avatarUrl: null
+        }
+      } as any)
+
+      vi.mocked(prisma.cbtfSeatStatus.findUnique).mockReset()
+
+      vi.mocked(prisma.cbtfSeatStatus.findUnique).mockResolvedValue({
+        isDisabled: false
+      } as any)
+
+      vi.mocked(prisma.cbtfReservation.update).mockReset()
+
+      vi.mocked(prisma.cbtfReservation.update).mockRejectedValueOnce(
+        Object.assign(new Error('Reservation no longer matches'), {
+          code: 'P2025'
+        })
+      )
+
+      const event = mockEvent(
+        'PROCTOR',
+        {},
+        {
+          reservationId: 'res-1',
+          studentId: '906000001'
+        }
+      )
+
+      await expect(handler(event)).rejects.toMatchObject({
+        statusCode: 409,
+        statusMessage: expect.stringContaining('Reservation status')
+      })
+
+      expect(prisma.cbtfReservation.update).toHaveBeenCalledTimes(1)
+
+      vi.mocked(prisma.cbtfReservation.update).mockReset()
+    })
+
     it.each(['fac-a', 'fac-b'])(
       'checks out reservation and records proctor user ID at %s',
       async (facilityId) => {
@@ -688,7 +744,10 @@ describe('API: Proctor Operations Endpoints', () => {
         expect(res.data.status).toBe('CHECKED_OUT')
         expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
           expect.objectContaining({
-            where: { id: 'res-1' },
+            where: {
+              id: 'res-1',
+              status: 'CHECKED_IN'
+            },
             data: expect.objectContaining({
               status: 'CHECKED_OUT',
               checkedOutByUserId: 'proctor-1'
