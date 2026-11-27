@@ -128,7 +128,8 @@ export async function chooseCbtfPlacement(
   startTime: Date,
   endTime: Date,
   requiredSeatProperties: string[],
-  excludeReservationId?: string
+  excludeReservationId?: string,
+  requiredSeatNumber?: number
 ): Promise<Placement> {
   const facilities = await tx.cbtfFacility.findMany({
     where: { id: { in: facilityIds } },
@@ -149,7 +150,7 @@ export async function chooseCbtfPlacement(
       allocatableSeats,
       new Map(facility.seats.map((seat) => [seat.seatNumber, seat.properties])),
       requiredSeatProperties
-    )
+    ).filter((seatNumber) => requiredSeatNumber === undefined || seatNumber === requiredSeatNumber)
     return eligibleSeats.length
       ? [
           {
