@@ -129,8 +129,8 @@ export async function getFacilityOperatingHoursForDate(
   timeZone: string = DEFAULT_CBTF_TIMEZONE
 ): Promise<FacilityOperatingHoursResult> {
   const localDateStr = extractCalendarDate(targetDate, timeZone)
-  const startOfDay = combineDateAndTime(localDateStr, '00:00', timeZone)
-  const endOfDay = combineDateAndTime(localDateStr, '23:59', timeZone)
+  const startOfDay = new Date(`${localDateStr}T00:00:00.000Z`)
+  const endOfDay = new Date(startOfDay.getTime() + 24 * 60 * 60 * 1000)
 
   // 1. Check schedule exception
   const exception = await (tx as any).cbtfScheduleException.findFirst({
@@ -138,7 +138,7 @@ export async function getFacilityOperatingHoursForDate(
       facilityId,
       date: {
         gte: startOfDay,
-        lte: endOfDay
+        lt: endOfDay
       }
     }
   })
@@ -163,7 +163,7 @@ export async function getFacilityOperatingHoursForDate(
   }
 
   // 2. Query weekly recurring operating hours (dayOfWeek in facility's timezone)
-  const dayOfWeek = getLocalDayOfWeek(targetDate, timeZone)
+  const dayOfWeek = startOfDay.getUTCDay()
   const weeklyHours = await (tx as any).cbtfOperatingHours.findUnique({
     where: {
       facilityId_dayOfWeek: {

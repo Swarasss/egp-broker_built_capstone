@@ -41,6 +41,76 @@ describe('CBTF Server Utilities', () => {
   })
 
   describe('getFacilityOperatingHoursForDate', () => {
+    it.each(['America/New_York', 'America/Los_Angeles', 'Asia/Tokyo', 'UTC'])(
+      'preserves exception calendar dates in %s',
+      async (timeZone) => {
+        const exception = {
+          date: new Date('2026-12-01T00:00:00.000Z'),
+          isClosed: true,
+          reason: 'Scheduled Closure'
+        }
+
+        const mockTx: any = {
+          cbtfScheduleException: {
+            findFirst: vi.fn().mockImplementation(async ({ where }) => {
+              const { gte, lt, lte } = where.date
+
+              const matches =
+                exception.date >= gte && (lt ? exception.date < lt : exception.date <= lte)
+
+              return matches ? exception : null
+            })
+          },
+          cbtfOperatingHours: {
+            findUnique: vi.fn().mockResolvedValue({
+              openTime: '08:00',
+              closeTime: '18:00'
+            })
+          }
+        }
+
+        const result = await getFacilityOperatingHoursForDate(
+          'fac-1',
+          new Date('2026-12-01T00:00:00.000Z'),
+          mockTx,
+          timeZone
+        )
+
+        expect(result.isOpen).toBe(false)
+        expect(result.reason).toBe('Scheduled Closure')
+
+        expect(mockTx.cbtfScheduleException.findFirst).toHaveBeenCalledWith({
+          where: {
+            facilityId: 'fac-1',
+            date: {
+              gte: new Date('2026-12-01T00:00:00.000Z'),
+              lt: new Date('2026-12-02T00:00:00.000Z')
+            }
+          }
+        })
+
+        expect(mockTx.cbtfOperatingHours.findUnique).not.toHaveBeenCalled()
+
+        const previousDay = await getFacilityOperatingHoursForDate(
+          'fac-1',
+          new Date('2026-11-30T00:00:00.000Z'),
+          mockTx,
+          timeZone
+        )
+
+        expect(previousDay.isOpen).toBe(true)
+
+        const nextDay = await getFacilityOperatingHoursForDate(
+          'fac-1',
+          new Date('2026-12-02T00:00:00.000Z'),
+          mockTx,
+          timeZone
+        )
+
+        expect(nextDay.isOpen).toBe(true)
+      }
+    )
+
     it('returns standard weekly operating hours when no exception exists', async () => {
       const mockTx: any = {
         cbtfScheduleException: { findFirst: vi.fn().mockResolvedValue(null) },
@@ -58,6 +128,15 @@ describe('CBTF Server Utilities', () => {
       expect(result.isOpen).toBe(true)
       expect(result.openTime).toBe('08:00')
       expect(result.closeTime).toBe('18:00')
+
+      expect(mockTx.cbtfOperatingHours.findUnique).toHaveBeenCalledWith({
+        where: {
+          facilityId_dayOfWeek: {
+            facilityId: 'fac-1',
+            dayOfWeek: 1
+          }
+        }
+      })
     })
 
     it('returns closed when schedule exception isClosed is true', async () => {
@@ -571,21 +650,28 @@ describe('Configurable CBTF duration: closing-time boundaries', () => {
   it.each([
     [20, '11:40', '11:45'],
     [120, '10:00', '10:05']
-  ] as const)('allows the exact closing boundary for %i minutes and rejects later starts',
+  ] as const)(
+    'allows the exact closing boundary for %i minutes and rejects later starts',
     (duration, latestStart, rejectedStart) => {
       const slots = generateAvailableSlotsForDate(facility, date, hours, [], 'UTC', duration)
       const latest = new Date(`2030-01-07T${latestStart}:00.000Z`)
       const rejected = new Date(`2030-01-07T${rejectedStart}:00.000Z`)
 
-      expect(slots).toContainEqual(expect.objectContaining({
-        startTime: latest, endTime: new Date('2030-01-07T12:00:00.000Z')
-      }))
+      expect(slots).toContainEqual(
+        expect.objectContaining({
+          startTime: latest,
+          endTime: new Date('2030-01-07T12:00:00.000Z')
+        })
+      )
       expect(slots.some((slot) => slot.startTime.getTime() === rejected.getTime())).toBe(false)
       expect(slots.every((slot) => slot.startTime <= latest)).toBe(true)
-      expect(slots.every((slot) =>
-        slot.endTime.getTime() - slot.startTime.getTime() === duration * 60 * 1000
-      )).toBe(true)
-    })
+      expect(
+        slots.every(
+          (slot) => slot.endTime.getTime() - slot.startTime.getTime() === duration * 60 * 1000
+        )
+      ).toBe(true)
+    }
+  )
 
   it('keeps the omitted duration at 60 minutes', () => {
     const slots = generateAvailableSlotsForDate(facility, date, hours, [])
@@ -594,8 +680,8 @@ describe('Configurable CBTF duration: closing-time boundaries', () => {
       startTime: new Date('2030-01-07T11:00:00.000Z'),
       endTime: new Date('2030-01-07T12:00:00.000Z')
     })
-    expect(slots.every((slot) =>
-      slot.endTime.getTime() - slot.startTime.getTime() === 60 * 60 * 1000
-    )).toBe(true)
+    expect(
+      slots.every((slot) => slot.endTime.getTime() - slot.startTime.getTime() === 60 * 60 * 1000)
+    ).toBe(true)
   })
 })
