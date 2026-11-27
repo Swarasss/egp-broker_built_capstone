@@ -6,7 +6,8 @@ import type {
   CbtfReservationWindow,
   CbtfRecommendedDay,
   CbtfStudentBlock,
-  CbtfStudentStart
+  CbtfStudentStart,
+  CbtfSchedulingChoices
 } from '@@/shared/models/cbtf'
 
 export interface CbtfAvailabilityData extends CbtfReservationWindow {
@@ -28,6 +29,7 @@ export interface CbtfAvailabilityData extends CbtfReservationWindow {
   blocks: CbtfStudentBlock[]
   recommendedDays: CbtfRecommendedDay[]
   hourlySlots: CbtfStudentStart[]
+  schedulingChoices?: CbtfSchedulingChoices
 }
 
 export function useCbtfStudent() {
@@ -76,7 +78,8 @@ export function useCbtfStudent() {
     assignmentId: string,
     blockIdOrPreference?: string,
     selectedDate?: string,
-    excludeReservationId?: string
+    excludeReservationId?: string,
+    view?: 'narrowing'
   ): Promise<CbtfAvailabilityData> => {
     const params: Record<string, string> = { assignmentId }
     if (blockIdOrPreference) {
@@ -90,6 +93,7 @@ export function useCbtfStudent() {
     }
     if (selectedDate) params.selectedDate = selectedDate
     if (excludeReservationId) params.excludeReservationId = excludeReservationId
+    if (view) params.view = view
 
     const res = await $fetch<ApiResponse<CbtfAvailabilityData>>('/api/me/cbtf/availability', {
       params

@@ -135,6 +135,14 @@ describe('useCbtfStudent Composable', () => {
     })
   })
 
+  it('requests the narrowing view with the rescheduling exclusion', async () => {
+    mockFetch.mockResolvedValueOnce({ data: { schedulingChoices: { morning: [], afternoon: [] } } })
+    await useCbtfStudent().fetchAvailability('asg-1', undefined, undefined, 'res-1', 'narrowing')
+    expect(mockFetch).toHaveBeenCalledWith('/api/me/cbtf/availability', {
+      params: { assignmentId: 'asg-1', view: 'narrowing', excludeReservationId: 'res-1' }
+    })
+  })
+
   it('creates reservation and refreshes list', async () => {
     const newRes = {
       id: 'res-3',
