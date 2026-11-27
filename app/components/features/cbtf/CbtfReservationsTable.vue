@@ -163,9 +163,14 @@
 
               <!-- Seat -->
               <td class="px-4 py-3 text-center">
-                <UBadge variant="subtle" color="primary" class="font-mono font-bold">
-                  #{{ res.seatNumber }}
-                </UBadge>
+                <div class="flex flex-col items-center gap-1">
+                  <UBadge variant="subtle" color="primary" class="font-mono font-bold">
+                    #{{ res.seatNumber }}
+                  </UBadge>
+                  <UBadge v-if="res.seatOutOfService" color="error" variant="subtle" size="xs">
+                    Out of service
+                  </UBadge>
+                </div>
               </td>
 
               <!-- Start Time -->

@@ -74,6 +74,22 @@ describe('useCbtfProctor Composable', () => {
     expect(feedError.value).toBeNull()
   })
 
+  it('moves a reservation to a spare seat and refreshes the feed', async () => {
+    const { moveToSpare } = useCbtfProctor()
+    mockFetch.mockResolvedValueOnce({ statusCode: 200, data: { id: 'res-1' } })
+
+    await moveToSpare('res-1')
+
+    expect(mockFetch).toHaveBeenCalledWith('/api/proctor/reservations/res-1/move-seat', {
+      method: 'POST',
+      body: {}
+    })
+    expect(mockRefreshFeed).toHaveBeenCalled()
+    expect(mockToast.add).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Student moved to a spare seat', color: 'success' })
+    )
+  })
+
   it('sends the selected ID, hides stale rosters, and clears a removed facility selection', async () => {
     const { facilities, selectedFacilityId, seated } = useCbtfProctor()
     expect(facilities.value).toEqual([facilityA, facilityB])

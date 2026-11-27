@@ -183,6 +183,39 @@
               {{ departuresCount }}
             </span>
           </div>
+
+          <div class="px-3 py-1.5 rounded-lg bg-neutral-100 dark:bg-neutral-800 text-center">
+            <span class="block text-xs text-neutral-500 font-medium">Spare Seats</span>
+            <span class="text-sm font-bold text-neutral-900 dark:text-neutral-100">
+              {{ spareSeats }}
+            </span>
+          </div>
+
+          <div
+            class="px-3 py-1.5 rounded-lg text-center"
+            :class="
+              outOfServiceSeats > 0
+                ? 'bg-red-100 dark:bg-red-950/50'
+                : 'bg-neutral-100 dark:bg-neutral-800'
+            "
+          >
+            <span
+              class="block text-xs font-medium"
+              :class="outOfServiceSeats > 0 ? 'text-red-700 dark:text-red-300' : 'text-neutral-500'"
+            >
+              Out of Service
+            </span>
+            <span
+              class="text-sm font-bold"
+              :class="
+                outOfServiceSeats > 0
+                  ? 'text-red-800 dark:text-red-200'
+                  : 'text-neutral-900 dark:text-neutral-100'
+              "
+            >
+              {{ outOfServiceSeats }}
+            </span>
+          </div>
         </div>
 
         <UButton
@@ -227,6 +260,16 @@
         feedError.message ||
         'Unable to retrieve live testing facility data from server.'
       "
+      class="mb-2"
+    />
+
+    <UAlert
+      v-if="atRiskCount > 0"
+      icon="i-lucide-triangle-alert"
+      color="warning"
+      variant="subtle"
+      :title="`${atRiskCount} ${atRiskCount === 1 ? 'student needs' : 'students need'} a new seat`"
+      description="Their workstation is out of service. Open the Seat Problems tab to move them to a spare seat."
       class="mb-2"
     />
 
@@ -539,6 +582,25 @@
             type="button"
             class="pb-3 text-sm font-semibold transition-colors border-b-2 cursor-pointer flex items-center gap-2"
             :class="[
+              activeFeedTab === 'atrisk'
+                ? 'border-red-500 text-red-600 dark:text-red-400'
+                : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
+            ]"
+            @click="activeFeedTab = 'atrisk'"
+          >
+            <UIcon name="i-lucide-triangle-alert" class="w-4 h-4" />
+            <span>Seat Problems</span>
+            <span
+              class="px-1.5 py-0.5 rounded-full text-xs bg-neutral-100 dark:bg-neutral-800 font-mono"
+            >
+              {{ atRiskCount }}
+            </span>
+          </button>
+
+          <button
+            type="button"
+            class="pb-3 text-sm font-semibold transition-colors border-b-2 cursor-pointer flex items-center gap-2"
+            :class="[
               activeFeedTab === 'reservations'
                 ? 'border-primary-500 text-primary-600 dark:text-primary-400'
                 : 'border-transparent text-neutral-500 hover:text-neutral-700 dark:hover:text-neutral-300'
@@ -588,7 +650,17 @@
           />
         </div>
 
-        <!-- Tab 4: All Reservations Roster (Read-only with Canvas resync) -->
+        <!-- Tab 4: Seat Problems (out-of-service workstation needs a spare seat) -->
+        <div v-else-if="liveRosterReady && activeFeedTab === 'atrisk'">
+          <BaseDataTable
+            :data="atRiskRoster"
+            :columns="atRiskColumns"
+            empty-icon="i-lucide-armchair"
+            empty-text="No students need a new seat right now."
+          />
+        </div>
+
+        <!-- Tab 5: All Reservations Roster (Read-only with Canvas resync) -->
         <div v-else-if="activeFeedTab === 'reservations'">
           <FeaturesCbtfReservationsTable
             ref="reservationsTable"
@@ -671,6 +743,14 @@ const arrivingCount = computed(() => currentCounts.value?.arriving ?? arrivingRo
 const departuresCount = computed(
   () => currentCounts.value?.departures ?? departuresRoster.value.length
 )
+const spareSeats = computed(() => currentFacility.value?.spareSeats ?? 0)
+const outOfServiceSeats = computed(() => currentFacility.value?.outOfServiceSeats ?? 0)
+const atRiskRoster = computed(() =>
+  [...seatedRoster.value, ...arrivingRoster.value].filter(
+    (reservation) => reservation.seatOutOfService
+  )
+)
+const atRiskCount = computed(() => atRiskRoster.value.length)
 
 const isOnDuty = computed(() => Boolean(unwrapState(props.proctorState.isOnDuty)))
 const isNoteModalOpen = computed(() => Boolean(unwrapState(props.proctorState.isNoteModalOpen)))
@@ -1027,6 +1107,42 @@ const departureColumns: any[] = [
             })
         })
       ])
+  }
+]
+
+const atRiskColumns: any[] = [
+  {
+    accessorKey: 'seatNumber',
+    header: 'Seat',
+    cell: ({ row }: { row: any }) =>
+      h(
+        'span',
+        {
+          class:
+            'px-2 py-1 rounded bg-red-100 dark:bg-red-950/60 font-mono font-bold text-red-700 dark:text-red-300'
+        },
+        seatLabel(row.original)
+      )
+  },
+  studentColumn,
+  assignmentColumn,
+  {
+    accessorKey: 'startTime',
+    header: 'Scheduled Slot',
+    cell: ({ row }: { row: any }) => formatRosterTime(row.original.startTime)
+  },
+  {
+    id: 'actions',
+    header: 'Action',
+    cell: ({ row }: { row: any }) =>
+      h(resolveComponent('UButton'), {
+        size: 'xs',
+        color: 'error',
+        variant: 'soft',
+        icon: 'i-lucide-arrow-right-left',
+        label: 'Move to spare seat',
+        onClick: () => props.proctorState.moveToSpare?.(row.original.id)
+      })
   }
 ]
 </script>

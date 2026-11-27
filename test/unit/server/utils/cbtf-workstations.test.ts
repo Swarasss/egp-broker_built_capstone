@@ -6,6 +6,7 @@ import {
   returnSeatToService,
   takeSeatOutOfService
 } from '@@/server/utils/cbtf-workstations'
+import { applySeatOutOfServiceFlags } from '@@/server/utils/cbtf'
 
 vi.mock('@@/server/utils/db', () => ({ default: {} }))
 
@@ -60,7 +61,13 @@ type Store = ReturnType<typeof createStore>
 
 function matchReservation(reservation: any, where: any = {}): boolean {
   if (where.facilityId && reservation.facilityId !== where.facilityId) return false
-  if (where.seatNumber !== undefined && reservation.seatNumber !== where.seatNumber) return false
+  if (where.seatNumber !== undefined) {
+    if (Array.isArray(where.seatNumber?.in)) {
+      if (!where.seatNumber.in.includes(reservation.seatNumber)) return false
+    } else if (reservation.seatNumber !== where.seatNumber) {
+      return false
+    }
+  }
   if (where.id?.not && reservation.id === where.id.not) return false
   if (where.status?.in && !where.status.in.includes(reservation.status)) return false
   if (where.endTime?.gt && !(new Date(reservation.endTime) > new Date(where.endTime.gt)))
@@ -125,7 +132,15 @@ function createDb(store: Store) {
         return row
       }),
       findMany: vi.fn(async ({ where }: any) =>
-        store.seatStatuses.filter((status) => status.facilityId === where.facilityId)
+        store.seatStatuses.filter((status) => {
+          if (Array.isArray(where.facilityId?.in)) {
+            if (!where.facilityId.in.includes(status.facilityId)) return false
+          } else if (where.facilityId && status.facilityId !== where.facilityId) {
+            return false
+          }
+          if (where.isDisabled !== undefined && status.isDisabled !== where.isDisabled) return false
+          return true
+        })
       ),
       deleteMany: vi.fn(async ({ where }: any) => {
         const before = store.seatStatuses.length
@@ -183,10 +198,24 @@ const NOW = new Date('2030-01-01T10:00:00Z')
 const at = (hoursFromNow: number) => new Date(NOW.getTime() + hoursFromNow * 60 * 60 * 1000)
 
 describe('CBTF workstations', () => {
-  it('summarizes seat states and capacity', async () => {
+  it('summarizes seat states, capacity, and at-risk reservations', async () => {
     const store = createStore({
-      seatStatuses: [{ seatNumber: 5, isDisabled: true, reason: 'broken', disabledAt: at(-1) }]
+      seatStatuses: [{ seatNumber: 5, isDisabled: true, reason: 'broken', disabledAt: at(-1) }],
+      reservations: [
+        {
+          id: 'risk-1',
+          userId: 'u1',
+          assignmentId: 'a1',
+          seatNumber: 5,
+          status: 'SCHEDULED',
+          startTime: at(1),
+          endTime: at(2)
+        }
+      ]
     })
+    store.users.u1 = { firstName: 'Ada', lastName: 'Student' }
+    store.assignments.a1 = { title: 'Exam' }
+
     const summary = await getWorkstationSummary(createDb(store) as any, 'fac-1', NOW)
 
     expect(summary.counts).toMatchObject({
@@ -199,6 +228,28 @@ describe('CBTF workstations', () => {
     expect(summary.seats.find((seat) => seat.seatNumber === 5)?.state).toBe('OUT_OF_SERVICE')
     expect(summary.seats.find((seat) => seat.seatNumber === 19)?.state).toBe('SPARE')
     expect(summary.seats.find((seat) => seat.seatNumber === 1)?.state).toBe('IN_SERVICE')
+    expect(summary.atRisk).toHaveLength(1)
+    expect(summary.atRisk[0]).toMatchObject({
+      reservationId: 'risk-1',
+      seatNumber: 5,
+      studentName: 'Ada Student',
+      assignmentTitle: 'Exam'
+    })
+  })
+
+  it('marks reservation DTOs whose seat is out of service', async () => {
+    const store = createStore({
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }]
+    })
+    const rows = [
+      { facilityId: 'fac-1', seatNumber: 5, seatOutOfService: false },
+      { facilityId: 'fac-1', seatNumber: 6 }
+    ]
+
+    await applySeatOutOfServiceFlags(createDb(store) as any, rows)
+
+    expect(rows[0]?.seatOutOfService).toBe(true)
+    expect(rows[1]?.seatOutOfService).toBe(false)
   })
 
   it('takes a seat out of service, moves the in-progress student to a spare, and flags future bookings', async () => {

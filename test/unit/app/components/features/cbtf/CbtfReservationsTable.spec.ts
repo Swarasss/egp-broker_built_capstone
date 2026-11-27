@@ -108,6 +108,19 @@ describe('CbtfReservationsTable.vue', () => {
     expect(wrapper.text()).toContain('#cov-77')
   })
 
+  it('shows an Out of service badge when the reservation seat is disabled', () => {
+    const original = mockReservations.value
+    mockReservations.value = [{ ...original[0], seatOutOfService: true }]
+
+    const wrapper = mount(CbtfReservationsTable, {
+      props: { readOnly: true, showResyncCanvas: true },
+      global: { stubs: globalStubs }
+    })
+
+    expect(wrapper.text()).toContain('Out of service')
+    mockReservations.value = original
+  })
+
   it('renders only the resync button when readOnly is true', () => {
     const wrapper = mount(CbtfReservationsTable, {
       props: {

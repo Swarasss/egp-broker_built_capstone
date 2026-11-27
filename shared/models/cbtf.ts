@@ -194,6 +194,7 @@ export interface CbtfWorkstationSummary {
   reassignThresholdMinutes: number
   counts: CbtfWorkstationCounts
   seats: CbtfSeatStatusDto[]
+  atRisk: CbtfAtRiskReservationDto[]
 }
 
 /** A reservation sitting on an out-of-service seat that needs staff attention. */

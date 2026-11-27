@@ -1,6 +1,6 @@
 import { defineEventHandler, getQuery, createError } from 'h3'
 import prisma from '@@/server/utils/db'
-import { lookupStudentForProctor } from '@@/server/utils/cbtf'
+import { applySeatOutOfServiceFlags, lookupStudentForProctor } from '@@/server/utils/cbtf'
 import type { ApiResponse } from '@@/shared/types/api'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
@@ -22,6 +22,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const result = await lookupStudentForProctor(prisma as any, studentId)
+  if (result?.reservation) {
+    await applySeatOutOfServiceFlags(prisma, [result.reservation as any])
+  }
 
   return {
     statusCode: 200,

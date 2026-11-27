@@ -1,6 +1,6 @@
 import { defineEventHandler, getQuery, createError } from 'h3'
 import prisma from '@@/server/utils/db'
-import { toCbtfReservationDto } from '@@/server/utils/cbtf'
+import { applySeatOutOfServiceFlags, toCbtfReservationDto } from '@@/server/utils/cbtf'
 import { cbtfReservationQuerySchema } from '@@/shared/schemas/cbtf.schema'
 import type { ApiResponse } from '@@/shared/types/api'
 import type { CbtfReservationDto } from '@@/shared/models/cbtf'
@@ -82,9 +82,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
 
   const totalPages = Math.max(1, Math.ceil(total / pageSize))
 
+  const data = reservations.map(toCbtfReservationDto)
+  await applySeatOutOfServiceFlags(prisma, data)
+
   return {
     statusCode: 200,
-    data: reservations.map(toCbtfReservationDto),
+    data,
     pagination: {
       total,
       page,

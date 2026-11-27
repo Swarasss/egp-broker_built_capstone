@@ -159,6 +159,22 @@ export async function getWorkstationSummary(
     },
     select: { seatNumber: true }
   })
+  const atRiskRows: WorkstationReservation[] =
+    disabled.length > 0
+      ? await (db as any).cbtfReservation.findMany({
+          where: {
+            facilityId,
+            seatNumber: { in: disabled },
+            status: { in: ['SCHEDULED', 'CHECKED_IN'] },
+            endTime: { gt: now }
+          },
+          include: {
+            user: { select: { firstName: true, lastName: true } },
+            assignment: { select: { title: true } }
+          },
+          orderBy: { startTime: 'asc' }
+        })
+      : []
   const counts = getSeatCapacityCounts(
     facility,
     disabled,
@@ -193,7 +209,8 @@ export async function getWorkstationSummary(
     spareSeatNumbers: spares,
     reassignThresholdMinutes: facility.reassignThresholdMinutes ?? 60,
     counts: workstationCounts,
-    seats
+    seats,
+    atRisk: atRiskRows.map(toAtRisk)
   }
 }
 

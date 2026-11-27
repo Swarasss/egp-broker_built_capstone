@@ -88,6 +88,13 @@
               Seat #{{ nextUpcomingReservation.seatNumber }} •
               {{ formatUpcomingDate(nextUpcomingReservation.startTime) }}
             </p>
+            <p
+              v-if="nextUpcomingReservation.seatOutOfService"
+              class="mt-1 text-xs font-semibold text-red-600 dark:text-red-400"
+              role="status"
+            >
+              Your seat is out of service. A staff member will help you move before your exam.
+            </p>
           </div>
           <p v-else class="text-xl font-bold text-neutral-900 dark:text-neutral-100 mt-1">
             None Scheduled

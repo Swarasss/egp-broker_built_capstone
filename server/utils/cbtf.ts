@@ -1255,6 +1255,40 @@ export function toCbtfReservationDto(res: any): CbtfReservationDto {
 }
 
 /**
+ * Marks reservation DTOs whose seat is currently out of service.
+ * Defensive: returns input unchanged if the db client does not expose seat status.
+ */
+export async function applySeatOutOfServiceFlags<
+  T extends { facilityId?: string | null; seatNumber: number; seatOutOfService?: boolean }
+>(db: PrismaClient | Prisma.TransactionClient, reservations: T[]): Promise<T[]> {
+  if (reservations.length === 0) return reservations
+  if (typeof (db as any).cbtfSeatStatus?.findMany !== 'function') return reservations
+
+  const facilityIds = [
+    ...new Set(
+      reservations
+        .map((reservation) => reservation.facilityId)
+        .filter((facilityId): facilityId is string => Boolean(facilityId))
+    )
+  ]
+  if (facilityIds.length === 0) return reservations
+
+  const statuses: Array<{ facilityId: string; seatNumber: number }> = await (
+    db as any
+  ).cbtfSeatStatus.findMany({
+    where: { facilityId: { in: facilityIds }, isDisabled: true },
+    select: { facilityId: true, seatNumber: true }
+  })
+  const disabled = new Set(statuses.map((status) => `${status.facilityId}:${status.seatNumber}`))
+  for (const reservation of reservations) {
+    reservation.seatOutOfService = Boolean(
+      reservation.facilityId && disabled.has(`${reservation.facilityId}:${reservation.seatNumber}`)
+    )
+  }
+  return reservations
+}
+
+/**
  * Returns live feed of seated roster, arriving students, departures, and facility capacity
  */
 export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: string) {
@@ -1361,6 +1395,15 @@ export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: stri
     select: { seatNumber: true, isDisabled: true }
   })
   const disabledSeats = getDisabledSeatNumbers(seatStatuses, totalSeats)
+  const disabledSeatSet = new Set(disabledSeats)
+  for (const reservation of [...seated, ...arriving, ...departures] as Array<{
+    seatNumber?: number
+    seatOutOfService?: boolean
+  }>) {
+    if (typeof reservation.seatNumber === 'number') {
+      reservation.seatOutOfService = disabledSeatSet.has(reservation.seatNumber)
+    }
+  }
   const allocatableSeats = new Set(getAllocatableSeatNumbers(facility, disabledSeats))
   const spares = getSpareSeatNumbers(facility, disabledSeats)
   const occupiedSeats = seated.length
