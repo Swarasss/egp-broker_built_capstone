@@ -28,7 +28,8 @@ vi.mock('@@/server/utils/db', () => ({
       count: vi.fn().mockResolvedValue(0)
     },
     cbtfSeatStatus: {
-      findMany: vi.fn().mockResolvedValue([])
+      findMany: vi.fn().mockResolvedValue([]),
+      findUnique: vi.fn().mockResolvedValue(null)
     }
   }
 }))
@@ -580,6 +581,22 @@ describe('API: Proctor Operations Endpoints', () => {
           )
         )
       ).rejects.toThrow('Student ID does not match this reservation')
+      expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+    })
+
+    it('rejects check-in when the seat is out of service', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1',
+        status: 'SCHEDULED',
+        seatNumber: 10,
+        facilityId: 'fac-a',
+        user: { studentId: '906000001' }
+      } as any)
+      vi.mocked(prisma.cbtfSeatStatus.findUnique).mockResolvedValue({ isDisabled: true } as any)
+
+      await expect(
+        checkInPost(mockEvent('PROCTOR', {}, { reservationId: 'res-1' }))
+      ).rejects.toThrow('Move the student to another seat before checking in')
       expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
     })
 

@@ -106,6 +106,7 @@ function attachReservation(store: Store, reservation: any, include?: any) {
 
 function createDb(store: Store) {
   return {
+    $queryRaw: vi.fn().mockResolvedValue([]),
     cbtfFacility: {
       findUnique: vi.fn(async ({ where, include }: any) => {
         if (where.id !== store.facility.id) return null
@@ -449,6 +450,7 @@ describe('CBTF workstations', () => {
 
   it('moves a reservation to an available spare seat', async () => {
     const store = createStore({
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }],
       reservations: [
         {
           id: 'r1',
@@ -470,11 +472,13 @@ describe('CBTF workstations', () => {
     }
     store.assignments.a1 = { title: 'Exam' }
 
-    const dto = await moveReservationToSeat(createDb(store) as any, {
+    const db = createDb(store)
+    const dto = await moveReservationToSeat(db as any, {
       reservationId: 'r1',
       userId: 'proctor-1',
       now: NOW
     })
+    expect(db.$queryRaw).toHaveBeenCalled()
     expect(dto.seatNumber).toBe(19)
     expect(store.reservations[0]?.seatNumber).toBe(19)
     expect(store.notes).toHaveLength(1)
@@ -482,7 +486,10 @@ describe('CBTF workstations', () => {
 
   it('rejects moving to an out-of-service seat', async () => {
     const store = createStore({
-      seatStatuses: [{ seatNumber: 3, isDisabled: true }],
+      seatStatuses: [
+        { seatNumber: 3, isDisabled: true },
+        { seatNumber: 5, isDisabled: true }
+      ],
       reservations: [
         {
           id: 'r1',
@@ -509,6 +516,7 @@ describe('CBTF workstations', () => {
     const store = createStore({
       spareSeatCount: 1,
       spareSeatNumbers: [20],
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }],
       seats: [{ seatNumber: 1, properties: ['SSD'] }],
       accommodations: [{ userId: 'u1', requiredSeatProperties: ['SSD'], isActive: true }],
       reservations: [
@@ -544,6 +552,7 @@ describe('CBTF workstations', () => {
     const store = createStore({
       spareSeatCount: 1,
       spareSeatNumbers: [20],
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }],
       accommodations: [{ userId: 'u1', requiredSeatProperties: ['SSD'], isActive: true }],
       reservations: [
         {
@@ -564,5 +573,31 @@ describe('CBTF workstations', () => {
         now: NOW
       })
     ).rejects.toMatchObject({ statusCode: 409 })
+  })
+
+  it('does not auto-move a reservation whose seat is already in service', async () => {
+    const store = createStore({
+      reservations: [
+        {
+          id: 'r1',
+          userId: 'u1',
+          assignmentId: 'a1',
+          seatNumber: 5,
+          status: 'SCHEDULED',
+          startTime: at(1),
+          endTime: at(2)
+        }
+      ]
+    })
+    const db = createDb(store)
+
+    await expect(
+      moveReservationToSeat(db as any, {
+        reservationId: 'r1',
+        userId: 'proctor-1',
+        now: NOW
+      })
+    ).rejects.toMatchObject({ statusCode: 409 })
+    expect(db.cbtfReservation.update).not.toHaveBeenCalled()
   })
 })

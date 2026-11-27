@@ -11,6 +11,7 @@ import {
   getWorkingSeatNumbers
 } from '@@/shared/utils/cbtf-seats'
 import { isSeatEligibleForStudent, toCbtfReservationDto } from './cbtf'
+import { lockCbtfFacilities } from './cbtf-placement'
 import type {
   CbtfAtRiskReservationDto,
   CbtfReservationDto,
@@ -381,6 +382,8 @@ export async function moveReservationToSeat(
     now?: Date
   }
 ): Promise<CbtfReservationDto> {
+  await lockCbtfFacilities(db as unknown as Prisma.TransactionClient)
+
   const reservation = await (db as any).cbtfReservation.findUnique({
     where: { id: params.reservationId },
     include: { facility: { include: { seats: true, seatStatuses: true } } }
@@ -400,6 +403,12 @@ export async function moveReservationToSeat(
   }
 
   const disabled = getDisabledSeatNumbers(facility.seatStatuses, facility.totalSeats)
+  if (params.targetSeatNumber === undefined && !disabled.includes(reservation.seatNumber)) {
+    throw createError({
+      statusCode: 409,
+      statusMessage: 'This reservation is already on an in-service seat'
+    })
+  }
   const candidates = getMoveCandidates(facility, disabled, reservation.seatNumber)
   const workingSeats = new Set(getWorkingSeatNumbers(facility, disabled))
   const accommodation = await (db as any).cbtfStudentAccommodation.findUnique({

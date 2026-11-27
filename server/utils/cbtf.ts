@@ -1726,6 +1726,23 @@ export async function checkInReservation(
     })
   }
 
+  const seatStatus = await (prisma as any).cbtfSeatStatus?.findUnique?.({
+    where: {
+      facilityId_seatNumber: {
+        facilityId: reservation.facilityId,
+        seatNumber: reservation.seatNumber
+      }
+    },
+    select: { isDisabled: true }
+  })
+  if (seatStatus?.isDisabled) {
+    throw createError({
+      statusCode: 409,
+      statusMessage:
+        'This seat is out of service. Move the student to another seat before checking in.'
+    })
+  }
+
   const updated = await prisma.cbtfReservation.update({
     where: { id: reservationId },
     data: {
