@@ -49,6 +49,17 @@ const seedUsers = [
     globalRole: 'USER' as const,
     emailVerified: true,
     emailVerifiedAt: new Date()
+  },
+  {
+    email: 'scheduler@example.com',
+    studentId: '906000003',
+    password:
+      '$scrypt$n=16384,r=8,p=1$J1715Bk7oV9rbFwFCPtSpA$y61smy4tql8Il9ybDfpOikdxkkcBVm6T5bJFlL1BDnDrURseVB25keJDYwdlgVVJYIhaP5flZvdT3OMKN7YQkw', // Demo123!
+    firstName: 'Sally',
+    lastName: 'Scheduler',
+    globalRole: 'USER' as const,
+    emailVerified: true,
+    emailVerifiedAt: new Date()
   }
 ]
 
@@ -144,6 +155,7 @@ async function main() {
   const admin = createdUsers[0]
   const demo = createdUsers[1]
   const ssdStudent = createdUsers[3]
+  const scheduler = createdUsers[4]
 
   await prisma.enrollment.createMany({
     data: [
@@ -152,7 +164,9 @@ async function main() {
       { userId: demo.id, courseId: course1.id, role: 'STUDENT' },
       { userId: demo.id, courseId: course2.id, role: 'STUDENT' },
       { userId: ssdStudent.id, courseId: course1.id, role: 'STUDENT' },
-      { userId: ssdStudent.id, courseId: course2.id, role: 'STUDENT' }
+      { userId: ssdStudent.id, courseId: course2.id, role: 'STUDENT' },
+      { userId: scheduler.id, courseId: course1.id, role: 'STUDENT' },
+      { userId: scheduler.id, courseId: course2.id, role: 'STUDENT' }
     ]
   })
   console.log('✅ Enrollments created (Admin as Teacher, Demo/SSD as Students)')
@@ -242,8 +256,9 @@ async function main() {
         courseId: course1.id,
         resourceLinkId: 'link-2',
         title: 'Variables and Loops',
+        availableFrom: new Date(now.getTime() - oneDay),
         dueDate: new Date(now.getTime() + oneDay), // Tomorrow
-        acceptUntil: new Date(now.getTime() + oneDay),
+        acceptUntil: new Date(now.getTime() + 7 * oneDay),
         isSchedulable: true,
         cbtfDurationMinutes: 60,
         scheduleWindowStart: new Date(now.getTime() - oneDay),

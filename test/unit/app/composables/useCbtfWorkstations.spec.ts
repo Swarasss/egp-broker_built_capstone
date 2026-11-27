@@ -1,3 +1,8 @@
+*\*
+ * AI Usage: Arc LLM's GLM-5.3 model was used to assist in writing this test file. The model was given specific test cases, and asked to address them in the file.
+ * The model generated code snippets based on the provided test cases, which were then integrated into the test file. 
+ * The generated tests were then reviewed and modified by a human developer to ensure accuracy and relevance.
+ */
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { flushPromises } from '@vue/test-utils'
 import { useCbtfWorkstations } from '../../../../app/composables/features/admin/useCbtfWorkstations'
