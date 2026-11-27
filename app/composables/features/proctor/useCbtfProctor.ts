@@ -10,7 +10,12 @@ export function useCbtfProctor() {
     useFetch<ApiResponse<{ isOnDuty: boolean }>>('/api/proctor/status')
 
   const selectedFacilityId = ref('')
-  const { data: facilitiesData, refresh: refreshFacilities } = useFetch<
+  const {
+    data: facilitiesData,
+    status: facilitiesStatus,
+    error: facilitiesError,
+    refresh: refreshFacilities
+  } = useFetch<
     ApiResponse<Pick<CbtfFacilitySummary, 'id' | 'name' | 'timezone' | 'totalSeats'>[]>
   >('/api/proctor/facilities', { cache: 'no-store' })
   const facilities = computed(() => facilitiesData.value?.data ?? [])
@@ -38,6 +43,7 @@ export function useCbtfProctor() {
     const feed = feedData.value?.data
     return selectedFacilityId.value && feed?.facility?.id === selectedFacilityId.value ? feed : null
   })
+  const feedReady = computed(() => Boolean(currentFeed.value))
   const facility = computed(() => currentFeed.value?.facility)
   const counts = computed(
     () => currentFeed.value?.counts || { seated: 0, arriving: 0, departures: 0 }
@@ -273,12 +279,15 @@ export function useCbtfProctor() {
     toggleDuty,
     facility,
     facilities,
+    facilitiesStatus,
+    facilitiesError,
     selectedFacilityId,
     counts,
     seated,
     arriving,
     departures,
     feedStatus,
+    feedReady,
     feedError,
     refreshFeed,
     lookupResult,

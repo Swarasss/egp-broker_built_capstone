@@ -148,7 +148,13 @@
             {{ option.name }}
           </option>
         </select>
-        <p v-if="!selectedFacilityId" class="text-xs text-neutral-500" role="status">
+        <p v-if="facilitiesError" class="text-xs text-error" role="alert">
+          Unable to load testing centers.
+        </p>
+        <p v-else-if="!facilities.length && facilitiesStatus !== 'success'" class="text-xs" role="status">
+          Loading testing centers…
+        </p>
+        <p v-else-if="!selectedFacilityId" class="text-xs text-neutral-500" role="status">
           {{ facilities.length ? 'Select a testing center to view its live roster.' : 'No testing centers available.' }}
         </p>
       </div>
@@ -211,7 +217,7 @@
 
     <!-- Live Feed Connection Error Banner -->
     <UAlert
-      v-if="feedError"
+      v-if="selectedFacilityId && feedError"
       icon="i-lucide-alert-circle"
       color="error"
       variant="subtle"
@@ -544,8 +550,16 @@
           </button>
         </div>
 
+        <p
+          v-if="activeFeedTab !== 'reservations' && liveRosterLoading"
+          class="py-12 text-center text-neutral-500"
+          role="status"
+        >
+          Loading live roster…
+        </p>
+
         <!-- Tab 1: Expected Arrivals -->
-        <div v-if="activeFeedTab === 'arriving'">
+        <div v-else-if="liveRosterReady && activeFeedTab === 'arriving'">
           <BaseDataTable
             :data="arrivingRoster"
             :columns="arrivingColumns"
@@ -555,7 +569,7 @@
         </div>
 
         <!-- Tab 2: Currently Seated Roster -->
-        <div v-else-if="activeFeedTab === 'seated'">
+        <div v-else-if="liveRosterReady && activeFeedTab === 'seated'">
           <BaseDataTable
             :data="seatedRoster"
             :columns="seatedColumns"
@@ -565,7 +579,7 @@
         </div>
 
         <!-- Tab 3: Departures Feed -->
-        <div v-else-if="activeFeedTab === 'departures'">
+        <div v-else-if="liveRosterReady && activeFeedTab === 'departures'">
           <BaseDataTable
             :data="departuresRoster"
             :columns="departureColumns"
@@ -577,6 +591,7 @@
         <!-- Tab 4: All Reservations Roster (Read-only with Canvas resync) -->
         <div v-else-if="activeFeedTab === 'reservations'">
           <FeaturesCbtfReservationsTable
+            ref="reservationsTable"
             :read-only="true"
             :show-resync-canvas="true"
             endpoint="/api/proctor/reservations"
@@ -601,6 +616,7 @@
 
 <script setup lang="ts">
 import { ref, computed, onMounted, onUnmounted, nextTick, h, resolveComponent, watch } from 'vue'
+import { DEFAULT_CBTF_TIMEZONE, getLocalTimeParts } from '@@/shared/utils/timezone'
 
 const props = withDefaults(
   defineProps<{
@@ -629,6 +645,8 @@ const selectedFacilityId = computed({
     props.proctorState.selectedFacilityId.value = id
   }
 })
+const facilitiesStatus = computed(() => unwrapState<string>(props.proctorState.facilitiesStatus))
+const facilitiesError = computed(() => unwrapState(props.proctorState.facilitiesError))
 const seatLabel = (reservation: { seatNumber: number; facilityName?: string }) =>
   `${reservation.facilityName || (props.isTraining ? currentFacility.value?.name : null) || 'Testing center unavailable'} · Seat #${reservation.seatNumber}`
 const totalSeats = computed(() => currentFacility.value?.totalSeats ?? '—')
@@ -669,6 +687,17 @@ const activeArrivalIndex = computed(() =>
   unwrapState<number>(props.proctorState.activeArrivalIndex)
 )
 const feedError = computed(() => unwrapState<any>(props.proctorState.feedError))
+
+const liveRosterReady = computed(
+  () => props.isTraining || Boolean(selectedFacilityId.value && unwrapState(props.proctorState.feedReady))
+)
+const liveRosterLoading = computed(
+  () => !liveRosterReady.value && Boolean(selectedFacilityId.value) && !feedError.value
+)
+const reservationsTable = ref<{ fetchReservations: () => Promise<void> } | null>(null)
+watch(lastAction, (action) => {
+  if (action) void reservationsTable.value?.fetchReservations()
+})
 
 const activeFeedTab = ref('arriving')
 const rawSwipeInput = ref('')
@@ -746,6 +775,56 @@ const formatSlotTime = (dateStr: string) => {
   return `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} at ${d.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}`
 }
 
+const rosterDateFormatter = computed(() => {
+  const options: Intl.DateTimeFormatOptions = { month: 'short', day: 'numeric', timeZoneName: 'short' }
+  try {
+    return new Intl.DateTimeFormat('en-US', {
+      ...options,
+      timeZone: currentFacility.value?.timezone || DEFAULT_CBTF_TIMEZONE
+    })
+  } catch {
+    return new Intl.DateTimeFormat('en-US', { ...options, timeZone: DEFAULT_CBTF_TIMEZONE })
+  }
+})
+
+const formatRosterTime = (value?: string | null) => {
+  if (!value) return '—'
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return '—'
+
+  const formatter = rosterDateFormatter.value
+  const { timeZone } = formatter.resolvedOptions()
+  const parts = formatter.formatToParts(date)
+  const month = parts.find((part) => part.type === 'month')?.value
+  const day = parts.find((part) => part.type === 'day')?.value
+  const zone = parts.find((part) => part.type === 'timeZoneName')?.value
+  const { formattedTime } = getLocalTimeParts(date, timeZone)
+  return `${month} ${day}, ${formattedTime}${zone ? ` ${zone}` : ''}`
+}
+
+const studentColumn = {
+  accessorKey: 'studentName',
+  header: 'Student',
+  cell: ({ row }: { row: any }) =>
+    h('div', { class: 'flex flex-col' }, [
+      h('span', { class: 'font-semibold' }, row.original.studentName || '—'),
+      row.original.studentId &&
+        h('span', { class: 'text-xs text-neutral-500 font-mono' }, `ID: ${row.original.studentId}`)
+    ])
+}
+
+const assignmentColumn = {
+  accessorKey: 'assignmentTitle',
+  header: 'Assignment',
+  cell: ({ row }: { row: any }) => row.original.assignmentTitle || '—'
+}
+
+const departureBadges = {
+  ENDING_SOON: { label: 'Ending Soon', color: 'warning' },
+  OVERDUE: { label: 'Overdue', color: 'error' },
+  CHECKED_OUT: { label: 'Checked Out', color: 'neutral' }
+} as const
+
 // Columns: Currently Seated
 const seatedColumns: any[] = [
   {
@@ -761,33 +840,13 @@ const seatedColumns: any[] = [
         seatLabel(row.original)
       )
   },
+  studentColumn,
+  assignmentColumn,
   {
-    accessorKey: 'studentName',
-    header: 'Student',
+    id: 'examTime',
+    header: 'Exam Time',
     cell: ({ row }: { row: any }) =>
-      h('div', { class: 'flex flex-col' }, [
-        h(
-          'span',
-          { class: 'font-semibold text-neutral-900 dark:text-neutral-100' },
-          row.original.studentName || '—'
-        ),
-        row.original.studentId &&
-          h(
-            'span',
-            { class: 'text-xs text-neutral-500 font-mono' },
-            `ID: ${row.original.studentId}`
-          )
-      ])
-  },
-  {
-    accessorKey: 'assignmentTitle',
-    header: 'Assignment',
-    cell: ({ row }: { row: any }) =>
-      h(
-        'span',
-        { class: 'text-xs text-neutral-700 dark:text-neutral-300 truncate max-w-[140px] block' },
-        row.original.assignmentTitle || '—'
-      )
+      `${formatRosterTime(row.original.startTime)} – ${formatRosterTime(row.original.endTime)}`
   },
   {
     accessorKey: 'remainingMinutes',
@@ -860,24 +919,8 @@ const arrivingColumns: any[] = [
           )
         : h('span', { class: 'font-mono text-neutral-400' }, '—')
   },
-  {
-    accessorKey: 'studentName',
-    header: 'Student',
-    cell: ({ row }: { row: any }) =>
-      h('div', { class: 'flex flex-col' }, [
-        h(
-          'span',
-          { class: 'font-semibold text-neutral-900 dark:text-neutral-100' },
-          row.original.studentName || '—'
-        ),
-        row.original.studentId &&
-          h(
-            'span',
-            { class: 'text-xs text-neutral-500 font-mono' },
-            `ID: ${row.original.studentId}`
-          )
-      ])
-  },
+  studentColumn,
+  assignmentColumn,
   {
     accessorKey: 'startTime',
     header: 'Scheduled Slot',
@@ -885,7 +928,7 @@ const arrivingColumns: any[] = [
       h(
         'span',
         { class: 'text-xs text-neutral-600 dark:text-neutral-400' },
-        formatSlotTime(row.original.startTime)
+        formatRosterTime(row.original.startTime)
       )
   },
   {
@@ -939,25 +982,27 @@ const departureColumns: any[] = [
           )
         : h('span', { class: 'font-mono text-neutral-400' }, '—')
   },
+  studentColumn,
+  assignmentColumn,
   {
-    accessorKey: 'studentName',
-    header: 'Student',
-    cell: ({ row }: { row: any }) =>
-      h('span', { class: 'font-semibold' }, row.original.studentName || '—')
+    accessorKey: 'endTime',
+    header: 'Scheduled End',
+    cell: ({ row }: { row: any }) => formatRosterTime(row.original.endTime)
+  },
+  {
+    accessorKey: 'checkedOutAt',
+    header: 'Checked Out At',
+    cell: ({ row }: { row: any }) => formatRosterTime(row.original.checkedOutAt)
   },
   {
     accessorKey: 'status',
     header: 'Status',
-    cell: ({ row }: { row: any }) =>
-      h(
-        resolveComponent('UBadge'),
-        {
-          size: 'xs',
-          variant: 'subtle',
-          color: row.original.status === 'CHECKED_OUT' ? 'neutral' : 'amber'
-        },
-        () => (row.original.status === 'CHECKED_OUT' ? 'Checked Out' : 'Ending Soon')
-      )
+    cell: ({ row }: { row: any }) => {
+      const status = (row.original.departureStatus ??
+        (row.original.status === 'CHECKED_OUT' ? 'CHECKED_OUT' : 'ENDING_SOON')) as keyof typeof departureBadges
+      const badge = departureBadges[status]
+      return h(resolveComponent('UBadge'), { size: 'xs', variant: 'subtle', color: badge.color }, () => badge.label)
+    }
   },
   {
     id: 'actions',

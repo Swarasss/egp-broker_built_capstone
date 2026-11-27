@@ -1219,18 +1219,27 @@ export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: stri
     .map(toCbtfReservationDto)
     .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
 
-  // Departures: Seated students with <= 10 min remaining or recently checked out
-  const departures = reservations
-    .filter((r) => {
-      if (r.status === 'CHECKED_OUT') return true
-      if (r.status === 'CHECKED_IN') {
-        const remainingMs = new Date(r.endTime).getTime() - now.getTime()
-        return remainingMs <= 10 * 60000
-      }
-      return false
-    })
-    .map(toCbtfReservationDto)
-    .sort((a, b) => new Date(b.endTime).getTime() - new Date(a.endTime).getTime())
+  // Pending departures come first, followed by the most recent completed checkouts.
+  const pendingDepartures = reservations
+    .filter(
+      (reservation) =>
+        reservation.status === 'CHECKED_IN' &&
+        reservation.endTime.getTime() - now.getTime() <= 10 * 60000
+    )
+    .sort((a, b) => a.endTime.getTime() - b.endTime.getTime() || a.id.localeCompare(b.id))
+    .map((reservation) => ({
+      ...toCbtfReservationDto(reservation),
+      departureStatus: reservation.endTime <= now ? 'OVERDUE' : 'ENDING_SOON'
+    }))
+  const recentCheckouts = reservations
+    .filter((reservation) => reservation.status === 'CHECKED_OUT')
+    .sort(
+      (a, b) =>
+        (b.checkedOutAt?.getTime() ?? 0) - (a.checkedOutAt?.getTime() ?? 0) ||
+        a.id.localeCompare(b.id)
+    )
+    .map((reservation) => ({ ...toCbtfReservationDto(reservation), departureStatus: 'CHECKED_OUT' }))
+  const departures = [...pendingDepartures, ...recentCheckouts]
 
   const totalSeats = facility.totalSeats ?? 48
   const occupiedSeats = seated.length
@@ -1240,6 +1249,7 @@ export async function getProctorLiveFeed(prisma: PrismaClient, facilityId?: stri
     facility: {
       id: facility.id,
       name: facility.name,
+      timezone: facility.timezone,
       totalSeats,
       occupiedSeats,
       availableSeats,

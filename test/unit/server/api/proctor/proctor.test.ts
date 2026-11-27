@@ -178,6 +178,42 @@ describe('API: Proctor Operations Endpoints', () => {
       }
     })
 
+    it('classifies departures and sorts pending ends and completed checkouts independently', async () => {
+      const now = Date.now()
+      const at = (minutes: number) => new Date(now + minutes * 60000)
+      const reservation = (id: string, end: number, checkout?: number) => ({
+        id,
+        facilityId: 'fac-1',
+        startTime: at(end - 60),
+        endTime: at(end),
+        status: checkout === undefined ? 'CHECKED_IN' : 'CHECKED_OUT',
+        checkedOutAt: checkout === undefined ? null : at(checkout)
+      })
+      vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue({
+        id: 'fac-1',
+        name: 'Facility',
+        totalSeats: 48,
+        timezone: 'America/Los_Angeles'
+      } as any)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+        reservation('ending-soon', 5),
+        reservation('old-checkout-with-later-scheduled-end', 30, -10),
+        reservation('overdue', -5),
+        reservation('newest-checkout', -10, -2),
+        reservation('still-testing', 15)
+      ] as any)
+
+      const { data } = await feedGet(mockEvent('PROCTOR', { facilityId: 'fac-1' }))
+      expect(data.facility.timezone).toBe('America/Los_Angeles')
+      expect(data.departures.map(({ id, departureStatus }: any) => [id, departureStatus])).toEqual([
+        ['overdue', 'OVERDUE'],
+        ['ending-soon', 'ENDING_SOON'],
+        ['newest-checkout', 'CHECKED_OUT'],
+        ['old-checkout-with-later-scheduled-end', 'CHECKED_OUT']
+      ])
+      expect(data.departures[2].checkedOutAt).toBe(at(-2).toISOString())
+    })
+
     it('returns facility capacity and grouped rosters', async () => {
       const now = new Date()
       const mockFacility = {

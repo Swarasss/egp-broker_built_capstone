@@ -1,6 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest'
 import { flushPromises, mount } from '@vue/test-utils'
-import { h, ref } from 'vue'
+import { defineComponent, h, onMounted, ref } from 'vue'
 import ProctorConsole from '~/components/features/proctor/ProctorConsole.vue'
 
 describe('ProctorConsole Component', () => {
@@ -15,6 +15,9 @@ describe('ProctorConsole Component', () => {
         { id: 'fac-2', name: 'Facility B' }
       ]),
       selectedFacilityId: ref(''),
+      facilitiesStatus: ref('success'),
+      facilitiesError: ref(null),
+      feedReady: ref(false),
       facility: ref({
         id: 'fac-1',
         name: 'Main CBTF',
@@ -114,7 +117,7 @@ describe('ProctorConsole Component', () => {
       .findAll('button')
       .find((button) => button.text().includes('Currently Seated'))!
       .trigger('click')
-    expect(wrapper.text()).toContain('Main CBTF · Seat #4')
+    expect(wrapper.text()).not.toContain('Main CBTF · Seat #4')
     expect(wrapper.find('[data-testid="training-banner"]').exists()).toBe(false)
     const select = wrapper.get('select#proctor-facility')
     expect(select.findAll('option').map((option) => option.text())).toEqual([
@@ -123,6 +126,11 @@ describe('ProctorConsole Component', () => {
       'Facility B'
     ])
     expect(wrapper.text()).toContain('Select a testing center to view its live roster.')
+    await select.setValue('fac-1')
+    mockState.feedReady.value = true
+    await flushPromises()
+    expect(wrapper.text()).toContain('Main CBTF · Seat #4')
+
     await select.setValue('fac-2')
     expect(mockState.selectedFacilityId.value).toBe('fac-2')
 
@@ -364,9 +372,7 @@ describe('ProctorConsole Component', () => {
     expect(tabs[0].text()).toContain('Expected Arrivals')
     expect(tabs[1].text()).toContain('Currently Seated')
     expect(tabs[0].classes()).toContain('border-primary-500')
-    expect(wrapper.find('[data-testid="data-table"]').text()).toContain(
-      'No arriving students scheduled in this window.'
-    )
+    expect(wrapper.find('[data-testid="data-table"]').exists()).toBe(false)
   })
 
   it('passes open prop to FeaturesProctorNoteModal and calls handleNoteModalUpdate', async () => {
@@ -517,5 +523,167 @@ describe('ProctorConsole Component', () => {
     await resTabButton!.trigger('click')
 
     expect(wrapper.find('.reservations-table-stub').exists()).toBe(true)
+  })
+  const liveTableStubs = {
+    UIcon: true,
+    UAlert: true,
+    UBadge: { template: '<span><slot /></span>' },
+    UButton: { template: '<button>{{ $attrs.label }}<slot /></button>' },
+    USwitch: true,
+    UInput: true,
+    BaseCard: { template: '<div><slot /></div>' },
+    BaseDataTable: defineComponent({
+      props: ['columns', 'data', 'emptyText'],
+      setup: (props) => () =>
+        h(
+          'div',
+          props.data.length
+            ? props.data.map((student: any) =>
+                h(
+                  'div',
+                  { 'data-row': student.id },
+                  props.columns
+                    .filter((column: any) => column.id !== 'actions')
+                    .map((column: any) => h('span', [column.cell({ row: { original: student } })]))
+                )
+              )
+            : props.emptyText
+        )
+    }),
+    FeaturesProctorNoteModal: true,
+    FeaturesCbtfReservationsTable: true,
+    NuxtLink: true
+  }
+
+  it('distinguishes facility catalog loading, errors, and a successful empty response', async () => {
+    mockState.facilities.value = []
+    mockState.facilitiesStatus.value = 'pending'
+    const wrapper = mount(ProctorConsole, {
+      props: { proctorState: mockState },
+      global: { stubs: liveTableStubs }
+    })
+    expect(wrapper.text()).toContain('Loading testing centers')
+    expect(wrapper.text()).not.toContain('No testing centers available')
+
+    mockState.facilitiesError.value = new Error('Failed')
+    mockState.facilitiesStatus.value = 'error'
+    await flushPromises()
+    expect(wrapper.get('[role="alert"]').text()).toContain('Unable to load testing centers')
+    expect(wrapper.text()).not.toContain('No testing centers available')
+
+    mockState.facilitiesError.value = null
+    mockState.facilitiesStatus.value = 'success'
+    await flushPromises()
+    expect(wrapper.text()).toContain('No testing centers available')
+  })
+
+  it('shows roster loading on selection and facility switch before allowing a genuine empty state', async () => {
+    const wrapper = mount(ProctorConsole, {
+      props: { proctorState: mockState },
+      global: { stubs: liveTableStubs }
+    })
+    const select = wrapper.get('#proctor-facility')
+    expect(wrapper.text()).not.toContain('No arriving students')
+    await select.setValue('fac-1')
+    expect(wrapper.text()).toContain('Loading live roster')
+    expect(wrapper.text()).not.toContain('No arriving students')
+
+    mockState.feedReady.value = true
+    await flushPromises()
+    expect(wrapper.get('[data-row="arr-1"]').text()).toContain('Jane Doe')
+
+    mockState.feedReady.value = false
+    await select.setValue('fac-2')
+    expect(wrapper.text()).toContain('Loading live roster')
+    expect(wrapper.find('[data-row="arr-1"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('No arriving students')
+
+    mockState.arriving.value = []
+    mockState.feedReady.value = true
+    await flushPromises()
+    expect(wrapper.text()).toContain('No arriving students scheduled in this window')
+  })
+
+  it('renders live exam details, facility-local times, and all departure badges', async () => {
+    mockState.selectedFacilityId.value = 'fac-1'
+    mockState.feedReady.value = true
+    mockState.facility.value.timezone = 'America/Los_Angeles'
+    const exam = {
+      studentId: '900000001',
+      studentName: 'Jane Doe',
+      assignmentTitle: 'Calculus II',
+      facilityName: 'Main CBTF',
+      seatNumber: 6,
+      startTime: '2026-11-30T16:00:00Z',
+      endTime: '2026-11-30T18:00:00Z'
+    }
+    mockState.arriving.value = [{ ...exam, id: 'arrival' }]
+    mockState.seated.value = [{ ...exam, id: 'seated', remainingMinutes: 25 }]
+    mockState.departures.value = [
+      { ...exam, id: 'soon', departureStatus: 'ENDING_SOON' },
+      { ...exam, id: 'overdue', departureStatus: 'OVERDUE' },
+      { ...exam, id: 'out', departureStatus: 'CHECKED_OUT', checkedOutAt: '2026-11-30T17:45:00Z' }
+    ]
+    const wrapper = mount(ProctorConsole, {
+      props: { proctorState: mockState },
+      global: { stubs: liveTableStubs }
+    })
+    const openTab = (name: string) =>
+      wrapper
+        .findAll('button')
+        .find((button) => button.text().includes(name))!
+        .trigger('click')
+    const row = (id: string) => wrapper.get(`[data-row="${id}"]`).text()
+
+    expect(row('arrival')).toContain('Calculus II')
+    expect(row('arrival')).toContain('Nov 30, 8:00 AM PST')
+    expect(row('arrival')).toContain('Main CBTF · Seat #6')
+    await openTab('Currently Seated')
+    expect(row('seated')).toContain('Nov 30, 8:00 AM PST – Nov 30, 10:00 AM PST')
+    expect(row('seated')).toContain('25 min')
+    await openTab('Departures')
+    expect(row('soon')).toContain('Ending Soon')
+    expect(row('overdue')).toContain('Overdue')
+    expect(row('out')).toContain('Checked Out')
+    expect(row('out')).toContain('ID: 900000001')
+    expect(row('out')).toContain('Calculus II')
+    expect(row('out')).toContain('Nov 30, 10:00 AM PST')
+    expect(row('out')).toContain('Nov 30, 9:45 AM PST')
+  })
+
+  it('refreshes the open All Reservations table after check-in and checkout', async () => {
+    const reservationStatus = ref('SCHEDULED')
+    const displayedStatus = ref('')
+    const fetchReservations = vi.fn(async () => {
+      displayedStatus.value = reservationStatus.value
+    })
+    const reservationsTable = defineComponent({
+      setup(_, { expose }) {
+        expose({ fetchReservations })
+        onMounted(fetchReservations)
+        return () => h('span', { 'data-testid': 'reservation-status' }, displayedStatus.value)
+      }
+    })
+    const wrapper = mount(ProctorConsole, {
+      props: { proctorState: mockState },
+      global: { stubs: { ...liveTableStubs, FeaturesCbtfReservationsTable: reservationsTable } }
+    })
+    await wrapper
+      .findAll('button')
+      .find((button) => button.text() === 'All Reservations')!
+      .trigger('click')
+    const status = () => wrapper.get('[data-testid="reservation-status"]').text()
+    expect(status()).toBe('SCHEDULED')
+
+    reservationStatus.value = 'CHECKED_IN'
+    mockState.lastAction.value = { type: 'checkin', message: 'Checked in', time: new Date() }
+    await flushPromises()
+    expect(status()).toBe('CHECKED_IN')
+
+    reservationStatus.value = 'CHECKED_OUT'
+    mockState.lastAction.value = { type: 'checkout', message: 'Checked out', time: new Date() }
+    await flushPromises()
+    expect(status()).toBe('CHECKED_OUT')
+    expect(fetchReservations).toHaveBeenCalledTimes(3)
   })
 })
