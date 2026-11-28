@@ -66,6 +66,8 @@ describe('CbtfScheduleModal', () => {
   it.each([
     ['RESERVATION_NOT_OPEN', 'The reservation window for this exam has not opened yet.'],
     ['RESERVATION_CLOSED', 'The reservation window for this exam is currently closed.'],
+    ['RETAKE_PASS_REQUIRED', 'A redeemed retake pass is required to schedule another attempt.'],
+    ['RETAKE_WINDOW_EXPIRED', 'Your retake window has expired or the pass was already used for an attempt.'],
     ['NO_CONFIGURED_FACILITY_HOURS', 'No testing center is configured with operating hours that overlap this exam window.'],
     ['NO_AVAILABLE_SEATS', 'No testing-center availability is currently available within your exam window.']
   ])('explains %s and disables Next', async (availabilityStatus, message) => {
@@ -77,6 +79,24 @@ describe('CbtfScheduleModal', () => {
     await flushPromises()
     expect(wrapper.get('[role="status"]').text()).toBe(message)
     expect(wrapper.findAll('button').find(button => button.text() === 'Next')?.attributes()).toHaveProperty('disabled')
+  })
+
+  it('shows both calendar dates for the server-provided retake window', async () => {
+    mockFetchAvailability.mockResolvedValue({
+      availabilityStatus: 'AVAILABLE',
+      studentWindow: {
+        isPassWindow: true,
+        start: new Date(2030, 10, 30, 14).toISOString(),
+        end: new Date(2030, 11, 1, 14).toISOString()
+      }
+    })
+    const wrapper = mount(CbtfScheduleModal, {
+      props: { open: true, assignment: mockAssignment }, global: { stubs }
+    })
+    await flushPromises()
+    expect(wrapper.text()).toContain('Retake scheduling window')
+    expect(wrapper.text()).toContain('Nov 30')
+    expect(wrapper.text()).toContain('Dec 1')
   })
 
   it.each([

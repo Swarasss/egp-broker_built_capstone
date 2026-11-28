@@ -1,4 +1,5 @@
-import { defineEventHandler, readValidatedBody } from 'h3'
+import { createError, defineEventHandler, getRouterParam, readValidatedBody } from 'h3'
+import { syncPassTypeEligibility } from '@@/server/utils/assignments'
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { updatePassTypeSchema } from '@@/shared/models/pass'
@@ -44,15 +45,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     })
   }
 
-  const body = await readValidatedBody(event, updatePassTypeSchema.parse)
-
-  const updated = await prisma.passType.update({
-    where: { id },
-    data: body
+  const { assignmentIds, ...body } = await readValidatedBody(event, updatePassTypeSchema.parse)
+  const updated = await prisma.$transaction(async (tx) => {
+    const saved = await tx.passType.update({ where: { id: passType.id }, data: body })
+    await syncPassTypeEligibility(saved.id, tx, assignmentIds)
+    return saved
   })
-
-  // Sync eligibility if titlePattern changed (or just always to be safe)
-  await syncPassTypeEligibility(updated.id)
 
   return {
     statusCode: 200,

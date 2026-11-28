@@ -24,11 +24,20 @@ export default defineEventHandler(async (event): Promise<ApiResponse<{ id: strin
     throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
   }
 
+  if (existing.retakeRedemptionId) {
+    throw createError({ statusCode: 409, statusMessage: 'Pass-backed retake reservations must be kept as attempt history' })
+  }
+
   // Delete individual Canvas assignment override if present before deleting reservation record
   await deleteCbtfReservationCanvasOverride(id)
 
   await prisma.cbtfReservation.delete({
-    where: { id }
+    where: { id, AND: [{ retakeRedemptionId: null }] }
+  }).catch((error) => {
+    if (error?.code === 'P2025') {
+      throw createError({ statusCode: 409, statusMessage: 'The reservation changed. Refresh and try again.' })
+    }
+    throw error
   })
 
   return {

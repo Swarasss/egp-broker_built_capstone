@@ -17,7 +17,7 @@ vi.mock('@@/server/utils/db', () => {
     studentPassPool: {
       findUnique: vi.fn(),
       create: vi.fn(),
-      update: vi.fn().mockResolvedValue({})
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     passType: {
       findUnique: vi.fn()
@@ -56,7 +56,7 @@ describe('Utility: redeemPass - GTA Interview Gating', () => {
     vi.mocked(prisma.enrollment.findUnique).mockResolvedValue(null)
     vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.passRedemption.create).mockResolvedValue({ id: 'red-1', cost: 1 } as any)
-    vi.mocked(prisma.studentPassPool.update).mockResolvedValue({} as any)
+    vi.mocked(prisma.studentPassPool.updateMany).mockResolvedValue({ count: 1 })
   })
 
   it('rejects resubmission pass when assignment requires interview and no completed interview exists', async () => {

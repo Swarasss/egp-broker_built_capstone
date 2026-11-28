@@ -2,6 +2,7 @@ import { createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import type { RedemptionRow } from '@@/shared/models/pass'
 import { calculatePassExtension } from '@@/shared/utils/extension'
+import { cbtfRetakeClaimSelect, cbtfRetakePassType, getOpenCbtfRetakeWindow } from './cbtf-retakes'
 import { resolveStudentEffectiveDates } from '@@/server/utils/overrides'
 import { notifyPassRedemption, notifyPassPortSyncFailure } from '@@/server/services/alert.service'
 import {
@@ -24,12 +25,13 @@ export async function getStudentRedemptions(
         passType: { courseId }
       }
     },
-    orderBy: { createdAt: 'desc' },
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
     include: {
-      assignment: { select: { title: true } },
+      assignment: { select: { title: true, isSchedulable: true, courseId: true } },
+      cbtfRetake: { select: cbtfRetakeClaimSelect },
       pool: {
         include: {
-          passType: { select: { hoursPerPass: true } }
+          passType: { select: { hoursPerPass: true, extensionOnly: true, extendsCutoffOnly: true } }
         }
       }
     }
@@ -37,7 +39,7 @@ export async function getStudentRedemptions(
 
   const now = new Date()
 
-  return redemptions.map((r: any) => {
+  return redemptions.map((r) => {
     const isActive = (() => {
       if (r.availableFrom && r.acceptUntil) {
         return now >= r.availableFrom && now <= r.acceptUntil
@@ -47,8 +49,23 @@ export async function getStudentRedemptions(
       return false
     })()
 
+    const passType = r.pool.passType
+    const isCbtfRetake = r.assignment.isSchedulable && r.assignment.courseId === courseId &&
+      !passType.extensionOnly && !passType.extendsCutoffOnly
+    const retakeWindow = isCbtfRetake ? getOpenCbtfRetakeWindow(r, now) : null
+    const redemptionBlock = isCbtfRetake
+      ? getOpenCbtfRetakeWindow(r, now, r.cbtfRetake?.id)
+      : null
+
     return {
       id: r.id,
+      assignmentId: r.assignmentId,
+      cbtfRetakeRedemptionBlockedUntil: redemptionBlock?.end.toISOString() ?? null,
+      cbtfRetakeWindow: retakeWindow && {
+        start: retakeWindow.start.toISOString(),
+        end: retakeWindow.end.toISOString(),
+        reservationId: r.cbtfRetake?.id ?? null
+      },
       assignmentTitle: r.assignment.title,
       createdAt: r.createdAt.toISOString(),
       cost: r.cost,
@@ -215,12 +232,34 @@ export async function redeemPass(
         pool.passType.courseId
       )
 
-      // 4. Find latest redemption for this student & assignment
-      const latestRedemption = await tx.passRedemption.findFirst({
-        where: {
-          pool: { userId },
-          assignmentId
-        },
+      const isCbtfRetake =
+        assignment.isSchedulable &&
+        assignment.courseId === pool.passType.courseId &&
+        !pool.passType.extensionOnly &&
+        !pool.passType.extendsCutoffOnly
+      const redemptionScope = { pool: { userId }, assignmentId }
+      if (isCbtfRetake) {
+        // Serialize eligibility checks across pass types for this student.
+        await tx.$queryRaw`SELECT id FROM "User" WHERE id = ${userId} FOR NO KEY UPDATE`
+      }
+      const now = new Date()
+      if (isCbtfRetake) {
+        const receipts = await tx.passRedemption.findMany({
+          where: {
+            ...redemptionScope,
+            pool: { userId, passType: { ...cbtfRetakePassType, courseId: assignment.courseId } }
+          },
+          include: { cbtfRetake: { select: cbtfRetakeClaimSelect } }
+        })
+        if (receipts.some((receipt) => getOpenCbtfRetakeWindow(receipt, now, receipt.cbtfRetake?.id))) {
+          throw createError({
+            statusCode: 400,
+            statusMessage: 'This assignment already has an active retake redemption.'
+          })
+        }
+      }
+      const latestRedemption = isCbtfRetake ? null : await tx.passRedemption.findFirst({
+        where: redemptionScope,
         orderBy: { createdAt: 'desc' }
       })
 
@@ -233,7 +272,7 @@ export async function redeemPass(
         },
         passType: pool.passType,
         latestRedemption,
-        now: new Date()
+        now
       })
 
       if (!extension.isEligible) {
@@ -249,6 +288,16 @@ export async function redeemPass(
           statusCode: 400,
           statusMessage: `Insufficient pass balance. You need ${extension.cost} pass(es) to extend past the current time.`
         })
+      }
+
+      // Reserve the balance before any external effects. A concurrent debit must
+      // still satisfy the balance predicate when it acquires the pool row lock.
+      const debit = await tx.studentPassPool.updateMany({
+        where: { id: pool.id, balance: { gte: extension.cost } },
+        data: { balance: { decrement: extension.cost } }
+      })
+      if (debit.count === 0) {
+        throw createError({ statusCode: 400, statusMessage: 'Insufficient pass balance' })
       }
 
       // 6. If tool supports PassPort extensions, perform pre-check & dispatch
@@ -378,12 +427,6 @@ export async function redeemPass(
         }
       })
 
-      // 8. Deduct required passes from pool
-      await tx.studentPassPool.update({
-        where: { id: pool.id },
-        data: { balance: { decrement: extension.cost } }
-      })
-
       alertData = {
         userName:
           pool.user?.firstName && pool.user?.lastName
@@ -397,7 +440,7 @@ export async function redeemPass(
       }
 
       return newRedemption
-    })
+    }, { isolationLevel: 'ReadCommitted' })
 
     if (alertData) {
       try {

@@ -5,7 +5,7 @@ import { moveReservationToSeat } from '@@/server/utils/cbtf-workstations'
 import type { ApiResponse } from '@@/shared/types/api'
 
 /**
- * Moves a reservation to a spare seat in the same facility.
+ * Moves a reservation to an eligible seat in the same facility.
  * Used when a workstation goes out of service (including mid-exam).
  */
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
@@ -34,11 +34,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const result = await prisma.$transaction((tx) =>
-    moveReservationToSeat(tx as any, {
+    moveReservationToSeat(tx, {
       reservationId: id,
       targetSeatNumber: validation.data.targetSeatNumber,
       userId: session.user.id
-    })
+    }),
+    { isolationLevel: 'ReadCommitted' }
   )
 
   return { statusCode: 200, data: result }

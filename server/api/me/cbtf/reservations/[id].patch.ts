@@ -4,8 +4,8 @@ import { rescheduleReservationInputSchema } from '@@/shared/schemas/cbtf.schema'
 import {
   getStudentAccommodation,
   getEffectiveExamDurationMinutes,
-  getStudentSchedulingWindow,
-  assertCbtfReservationWindowOpen,
+  getCbtfSchedulingState,
+  assertCbtfSchedulingOpen,
   toCbtfReservationDto
 } from '@@/server/utils/cbtf'
 import { chooseCbtfPlacement, lockCbtfFacilities } from '@@/server/utils/cbtf-placement'
@@ -100,8 +100,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       if (!existing || existing.userId !== session.user.id) {
         throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
       }
-      currentStep = 'Checking Reservation Window'
-      assertCbtfReservationWindowOpen(existing.assignment)
       currentStep = 'Applying SSD Accommodations'
       const accommodation = await getStudentAccommodation(session.user.id, tx)
       const durationMinutes = getEffectiveExamDurationMinutes(
@@ -143,26 +141,10 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         })
       }
 
-      // Check if student already completed this exam (requires retake pass to reschedule)
-      currentStep = 'Checking For Completed Exam'
-      const existingCompleted = await tx.cbtfReservation.findFirst({
-        where: {
-          userId: session.user.id,
-          assignmentId: existing.assignment?.id || existing.assignmentId,
-          id: { not: existing.id },
-          status: { in: ['CHECKED_OUT', 'COMPLETED'] }
-        }
-      })
-      if (existingCompleted) {
-        const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment, tx)
-        if (!studentWindow.isPassWindow) {
-          throw createError({
-            statusCode: 403,
-            statusMessage:
-              'You have already completed this exam. A retake pass is required to reschedule another attempt.'
-          })
-        }
-      }
+      currentStep = 'Verifying Student Availability Window'
+      const scheduling = await getCbtfSchedulingState(session.user.id, existing.assignment, tx, existing)
+      assertCbtfSchedulingOpen(scheduling)
+      const studentWindow = scheduling.examWindow
 
       // Check for time collision with student's other active reservations
       currentStep = 'Checking Time Overlap With Other Reservations'
@@ -185,9 +167,6 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
         })
       }
 
-      // Verify within student scheduling window
-      currentStep = 'Verifying Student Availability Window'
-      const studentWindow = await getStudentSchedulingWindow(session.user.id, existing.assignment, tx)
       if (newStartTime < studentWindow.start || newEndTime > studentWindow.end) {
         throw createError({
           statusCode: 400,
@@ -201,13 +180,18 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       )
 
       const updated = await tx.cbtfReservation.update({
-        where: { id: existing.id, status: existing.status },
+        where: {
+          id: existing.id,
+          status: existing.status,
+          AND: [{ retakeRedemptionId: existing.retakeRedemptionId }]
+        },
         data: {
           facilityId: facility.id,
           startTime: newStartTime,
           endTime: newEndTime,
           seatNumber: assignedSeat,
-          status: 'SCHEDULED'
+          status: 'SCHEDULED',
+          retakeRedemptionId: studentWindow.redemptionId
         },
         include: {
           facility: { select: { name: true } },
@@ -231,6 +215,12 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       data: toCbtfReservationDto(updatedReservation)
     }
   } catch (err: any) {
+    if (err.code === 'P2002' && err.meta?.target?.includes('retakeRedemptionId')) {
+      throw createError({ statusCode: 409, statusMessage: 'This pass has already been claimed for a retake.' })
+    }
+    if (err.code === 'P2025') {
+      throw createError({ statusCode: 409, statusMessage: 'The reservation changed. Refresh and try again.' })
+    }
     const errorType = err.statusCode
       ? `HTTP ${err.statusCode} (${err.name || 'H3Error'})`
       : err.name || 'Error'

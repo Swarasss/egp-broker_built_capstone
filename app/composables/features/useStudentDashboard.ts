@@ -11,7 +11,7 @@ export const useStudentDashboard = (isPreview = false) => {
   const {
     nextUpcomingReservation,
     getReservationForAssignment,
-    refreshReservations: refreshCbtfReservations
+    refreshReservations
   } = useCbtfStudent()
 
   // Fetch pass pools for the current course
@@ -36,6 +36,34 @@ export const useStudentDashboard = (isPreview = false) => {
     status: redemptionsStatus,
     refresh: refreshRedemptions
   } = useFetch<ApiResponse<RedemptionRow[]>>('/api/me/redemptions')
+
+  const refreshCbtfReservations = () => Promise.all([refreshReservations(), refreshRedemptions()])
+
+  const retakeClock = ref(Date.now())
+  let retakeTimer: ReturnType<typeof setInterval> | undefined
+  onMounted(() => {
+    retakeTimer = setInterval(() => {
+      retakeClock.value = Date.now()
+    }, 1000)
+  })
+  onUnmounted(() => clearInterval(retakeTimer))
+
+  const getCbtfRetake = (assignmentId: string, reservationId?: string) =>
+    redemptionsData.value?.data?.find((receipt) => {
+      const window = receipt.cbtfRetakeWindow
+      return (
+        receipt.assignmentId === assignmentId &&
+        window &&
+        (!reservationId || window.reservationId === reservationId) &&
+        +new Date(window.start) <= retakeClock.value &&
+        retakeClock.value < +new Date(window.end)
+      )
+    })?.cbtfRetakeWindow
+
+  const isCbtfRetakePass = (
+    assignment: Pick<AssignmentRow, 'isSchedulable'>,
+    passType: { extensionOnly?: boolean; extendsCutoffOnly?: boolean }
+  ) => assignment.isSchedulable && !passType.extensionOnly && !passType.extendsCutoffOnly
 
   // Fetch current enrollment for courseId
   const { data: currentEnrollmentData } = useCurrentEnrollment({ immediate: true })
@@ -91,6 +119,7 @@ export const useStudentDashboard = (isPreview = false) => {
     if (passTypesData.value?.data) {
       return passTypesData.value.data.map((pt) => ({
         id: pt.id,
+        passTypeId: pt.id,
         name: pt.name,
         balance: pt.initialBalance,
         hoursPerPass: pt.hoursPerPass
@@ -146,7 +175,7 @@ export const useStudentDashboard = (isPreview = false) => {
 
         // 3. Check if there is an active extension currently in progress
         const latestRedemption = redemptionsData.value?.data?.find(
-          (r: any) => r.assignmentTitle === a.title
+          (r) => r.assignmentId === a.id
         )
         if (latestRedemption?.acceptUntil && new Date(latestRedemption.acceptUntil) > now) {
           return true
@@ -203,8 +232,9 @@ export const useStudentDashboard = (isPreview = false) => {
   // CBTF Modal & Selection State
   const showCbtfModal = ref(false)
   const selectedCbtfAssignment = ref<AssignmentRow | null>(null)
+  const isNewCbtfRetake = ref(false)
   const selectedCbtfReservation = computed(() => {
-    if (!selectedCbtfAssignment.value) return null
+    if (!selectedCbtfAssignment.value || isNewCbtfRetake.value) return null
     const res = getReservationForAssignment(selectedCbtfAssignment.value.id)
     if (res && res.status !== 'CHECKED_OUT' && res.status !== 'COMPLETED') {
       return res
@@ -212,7 +242,8 @@ export const useStudentDashboard = (isPreview = false) => {
     return null
   })
 
-  const openCbtfModal = (assignment: AssignmentRow) => {
+  const openCbtfModal = (assignment: AssignmentRow, newRetake = false) => {
+    isNewCbtfRetake.value = newRetake
     selectedCbtfAssignment.value = assignment
     showCbtfModal.value = true
   }
@@ -231,16 +262,17 @@ export const useStudentDashboard = (isPreview = false) => {
   }
 
   const selectedLatestRedemption = computed(() => {
-    if (!selectedAssignment.value || !redemptionsData.value?.data) return null
+    if (!selectedAssignment.value || !redemptionsData.value?.data ||
+      (selectedPassType.value && isCbtfRetakePass(selectedAssignment.value, selectedPassType.value))) return null
     return (
       redemptionsData.value.data.find(
-        (r: any) => r.assignmentTitle === selectedAssignment.value?.title
+        (r) => r.assignmentId === selectedAssignment.value?.id
       ) || null
     )
   })
 
   const handleRedeemClick = (assignment: AssignmentRow, passType: { id: string; name: string }) => {
-    const pool = effectivePassPools.value.find((p) => p.name === passType.name)
+    const pool = effectivePassPools.value.find((p) => p.passTypeId === passType.id)
     if (!pool || pool.balance <= 0) return
 
     const fullPassType = assignment.eligiblePassTypes?.find((pt) => pt.id === passType.id) || {
@@ -315,16 +347,34 @@ export const useStudentDashboard = (isPreview = false) => {
 
         const now = new Date()
         const latestRedemption = redemptionsData.value?.data?.find(
-          (r: any) => r.assignmentTitle === row.original.title
+          (r) => r.assignmentId === row.original.id
         )
 
         return h(
           'div',
           { class: 'flex flex-wrap gap-2.5 items-center' },
           types.map((pt: any) => {
-            const pool = effectivePassPools.value.find((p) => p.name === pt.name)
+            const pool = effectivePassPools.value.find((p) => p.passTypeId === pt.id)
             const balance = pool?.balance ?? 0
             const hasBalance = balance > 0
+
+            const isRetake = isCbtfRetakePass(row.original, pt)
+            const blocksRetake = isRetake && redemptionsData.value?.data?.some((receipt) =>
+              receipt.assignmentId === row.original.id && receipt.cbtfRetakeRedemptionBlockedUntil &&
+              +new Date(receipt.cbtfRetakeRedemptionBlockedUntil) > retakeClock.value
+            )
+            if (blocksRetake) {
+              return h(
+                'button',
+                {
+                  type: 'button',
+                  disabled: true,
+                  class: 'rounded-md border border-neutral-200 px-2.5 py-1 text-xs text-neutral-500 dark:border-neutral-700',
+                  title: 'This assignment already has an active retake redemption.'
+                },
+                `${pt.name} (already redeemed)`
+              )
+            }
 
             const ext = calculatePassExtension({
               assignment: row.original,
@@ -334,12 +384,12 @@ export const useStudentDashboard = (isPreview = false) => {
                 minDaysPastDue: pt.minDaysPastDue,
                 maxDaysPastDue: pt.maxDaysPastDue
               },
-              latestRedemption,
+              latestRedemption: isRetake ? null : latestRedemption,
               now
             })
 
             // State 1: Active extension currently in progress
-            if (latestRedemption?.dueDate && now <= new Date(latestRedemption.dueDate)) {
+            if (!isRetake && latestRedemption?.dueDate && now <= new Date(latestRedemption.dueDate)) {
               return h(
                 'span',
                 {
@@ -428,6 +478,30 @@ export const useStudentDashboard = (isPreview = false) => {
 
         const res = getReservationForAssignment(row.original.id)
 
+        const retake = getCbtfRetake(row.original.id)
+        const canResume = res && getCbtfRetake(row.original.id, res.id)
+        if (retake && res?.status !== 'SCHEDULED' && res?.status !== 'CHECKED_IN') {
+          return h('div', { class: 'space-y-1' }, [
+            h(
+              'p',
+              { class: 'text-xs text-neutral-600 dark:text-neutral-400' },
+              'Retake available with redeemed pass'
+            ),
+            h(
+              'button',
+              {
+                type: 'button',
+                class: 'font-semibold text-primary-600 hover:underline dark:text-primary-400',
+                onClick: (event: MouseEvent) => {
+                  event.stopPropagation()
+                  openCbtfModal(row.original, !canResume)
+                }
+              },
+              canResume ? 'Reschedule Retake' : 'Schedule Retake'
+            )
+          ])
+        }
+
         if (!res) {
           return h(
             'button',
@@ -486,6 +560,14 @@ export const useStudentDashboard = (isPreview = false) => {
           )
         }
 
+        if (res.isRetake && !canResume && (res.status === 'MISSED' || res.status === 'CANCELLED')) {
+          return h(
+            'span',
+            { class: 'text-xs text-neutral-500' },
+            res.status === 'MISSED' ? 'Missed retake' : 'Cancelled retake'
+          )
+        }
+
         if (res.status === 'MISSED') {
           return h(
             'button',
@@ -525,37 +607,6 @@ export const useStudentDashboard = (isPreview = false) => {
         }
 
         if (res.status === 'CHECKED_OUT' || res.status === 'COMPLETED') {
-          // Check if student has redeemed a pass for this assignment (e.g. retake pass)
-          const latestRedemption = redemptionsData.value?.data?.find(
-            (r: any) => r.assignmentTitle === row.original.title
-          )
-          const isRetakeEligible =
-            latestRedemption &&
-            (!res.checkedOutAt ||
-              new Date(latestRedemption.createdAt) >= new Date(res.checkedOutAt))
-
-          if (isRetakeEligible) {
-            return h(
-              'button',
-              {
-                type: 'button',
-                class:
-                  'inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-xs font-semibold bg-primary-50 text-primary-700 dark:bg-primary-950/50 dark:text-primary-300 border border-primary-200 dark:border-primary-800 hover:bg-primary-100 dark:hover:bg-primary-900 transition-colors cursor-pointer',
-                onClick: (e: MouseEvent) => {
-                  e.stopPropagation()
-                  openCbtfModal(row.original)
-                }
-              },
-              [
-                h(resolveComponent('UIcon'), {
-                  name: 'i-lucide-calendar-plus',
-                  class: 'w-3.5 h-3.5'
-                }),
-                'Schedule Retake'
-              ]
-            )
-          }
-
           return h(
             'span',
             {

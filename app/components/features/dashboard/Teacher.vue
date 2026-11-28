@@ -254,8 +254,9 @@
   <FeaturesAdminPassTypeEditPanel
     v-model:open="passTypeEditOpen"
     :pass-type="editingPassType"
-    @saved="onPassTypeRowUpdated"
-    @created="onPassTypeItemCreated"
+    :assignments="assignmentsData?.data"
+    @saved="onPassTypeSaved"
+    @created="onPassTypeCreated"
   />
 
   <FeaturesAdminAssignmentEditPanel
@@ -451,6 +452,16 @@ const onStudentBalancesUpdated = (newBalances: StudentPassBalance[]) => {
 // When an assignment is saved with eligibility changes, do a full refresh
 // instead of in-place update since eligibility data comes from the server
 const onAssignmentSavedWithRefresh = () => {
+  onAssignmentItemCreated()
+}
+
+const onPassTypeSaved: typeof onPassTypeRowUpdated = (id, updates) => {
+  onPassTypeRowUpdated(id, updates)
+  onAssignmentItemCreated()
+}
+
+const onPassTypeCreated = () => {
+  onPassTypeItemCreated()
   onAssignmentItemCreated()
 }
 

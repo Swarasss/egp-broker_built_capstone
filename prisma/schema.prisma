@@ -531,6 +531,7 @@ model PassRedemption {
 
   // Canvas override tracking
   canvasOverrideId String? // Canvas assignment override ID if synced to Canvas
+  cbtfRetake       CbtfReservation? @relation("CbtfRetakeRedemption")
 
   @@index([poolId])
   @@index([assignmentId])
@@ -793,6 +794,10 @@ model CbtfReservation {
 
   userId             String
   user               User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  // One redeemed pass can fund only one retake reservation.
+  retakeRedemptionId String?               @unique
+  retakeRedemption   PassRedemption?       @relation("CbtfRetakeRedemption", fields: [retakeRedemptionId], references: [id], onDelete: SetNull)
 
   seatNumber         Int
   /// Scheduled exam start time, stored as an absolute UTC instant

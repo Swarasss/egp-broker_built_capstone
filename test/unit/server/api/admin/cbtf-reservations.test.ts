@@ -285,6 +285,18 @@ describe('Admin CBTF Reservations Endpoints', () => {
       await expect(reservationDelete(event)).rejects.toThrow('Reservation not found')
     })
 
+    it('preserves a pass-backed retake and its redemption claim', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'retake', retakeRedemptionId: 'redeemed-pass', status: 'CHECKED_OUT'
+      } as any)
+
+      await expect(reservationDelete(mockEvent('ADMIN', {}, { id: 'retake' }))).rejects.toMatchObject({
+        statusCode: 409
+      })
+      expect(deleteCbtfReservationCanvasOverride).not.toHaveBeenCalled()
+      expect(prisma.cbtfReservation.delete).not.toHaveBeenCalled()
+    })
+
     it('deletes Canvas override before deleting reservation record', async () => {
       const event = mockEvent('ADMIN', {}, { id: 'res-1' })
 
@@ -302,7 +314,7 @@ describe('Admin CBTF Reservations Endpoints', () => {
       expect(res.statusCode).toBe(200)
       expect(deleteCbtfReservationCanvasOverride).toHaveBeenCalledWith('res-1')
       expect(prisma.cbtfReservation.delete).toHaveBeenCalledWith({
-        where: { id: 'res-1' }
+        where: { id: 'res-1', AND: [{ retakeRedemptionId: null }] }
       })
     })
   })

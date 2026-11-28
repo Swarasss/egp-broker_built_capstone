@@ -112,6 +112,11 @@
           </span>
         </div>
 
+        <div v-if="availabilityData?.studentWindow?.isPassWindow" class="space-y-1 text-sm">
+          <p class="font-semibold">Retake scheduling window</p>
+          <p>{{ formatRetakeDate(availabilityData.studentWindow.start) }} – {{ formatRetakeDate(availabilityData.studentWindow.end) }}</p>
+        </div>
+
         <!-- Loading State -->
         <div v-if="loadingAvailability" class="py-12 text-center space-y-3">
           <UIcon name="i-lucide-loader-2" class="w-8 h-8 mx-auto animate-spin text-primary-500" />
@@ -401,6 +406,8 @@ const availabilityMessages: Record<Exclude<CbtfAvailabilityStatus, 'AVAILABLE'> 
   INVALID_ASSIGNMENT_WINDOW: 'This exam is not fully configured for CBTF scheduling. Please contact your instructor.',
   RESERVATION_NOT_OPEN: 'The reservation window for this exam has not opened yet.',
   RESERVATION_CLOSED: 'The reservation window for this exam is currently closed.',
+  RETAKE_PASS_REQUIRED: 'A redeemed retake pass is required to schedule another attempt.',
+  RETAKE_WINDOW_EXPIRED: 'Your retake window has expired or the pass was already used for an attempt.',
   NO_CONFIGURED_FACILITY_HOURS: 'No testing center is configured with operating hours that overlap this exam window.',
   NO_AVAILABLE_SEATS: 'No testing-center availability is currently available within your exam window.',
   NO_FUTURE_STARTS: 'There are no remaining exam start times within your exam window.',
@@ -581,6 +588,11 @@ const handleCancel = async () => {
     cancelling.value = false
   }
 }
+
+const formatRetakeDate = (value: string) =>
+  new Date(value).toLocaleString(undefined, {
+    month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit'
+  })
 
 const formatReservationTime = (startStr: string, endStr: string) => {
   const start = new Date(startStr)

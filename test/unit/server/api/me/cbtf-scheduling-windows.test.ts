@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import availabilityGet from '../../../../../server/api/me/cbtf/availability.get'
 import reservationsPost from '../../../../../server/api/me/cbtf/reservations.post'
 import reservationPatch from '../../../../../server/api/me/cbtf/reservations/[id].patch'
+import reservationDelete from '../../../../../server/api/me/cbtf/reservations/[id].delete'
 import assignmentPatch from '../../../../../server/api/me/assignments/[id].patch'
 import facilityPost from '../../../../../server/api/admin/cbtf/facility.post'
 import facilityPatch from '../../../../../server/api/admin/cbtf/facility.patch'
@@ -16,7 +17,7 @@ vi.mock('@@/server/utils/db', () => ({
     assignment: { findUnique: vi.fn(), update: vi.fn() },
     user: { findUnique: vi.fn() },
     enrollment: { findFirst: vi.fn() },
-    passRedemption: { findFirst: vi.fn() },
+    passRedemption: { findMany: vi.fn().mockResolvedValue([]) },
     cbtfReservation: { findFirst: vi.fn(), findUnique: vi.fn(), findMany: vi.fn(), count: vi.fn(), create: vi.fn(), update: vi.fn() },
     cbtfFacility: { findMany: vi.fn(), findUnique: vi.fn(), create: vi.fn(), update: vi.fn(), delete: vi.fn() },
     cbtfProctorShift: { count: vi.fn() },
@@ -29,7 +30,8 @@ vi.mock('@@/server/utils/db', () => ({
   }
 }))
 vi.mock('@@/server/utils/cbtf-canvas', () => ({
-  syncCbtfReservationCanvasOverride: vi.fn().mockResolvedValue({})
+  syncCbtfReservationCanvasOverride: vi.fn().mockResolvedValue({}),
+  deleteCbtfReservationCanvasOverride: vi.fn().mockResolvedValue(true)
 }))
 vi.mock('@@/server/services/alert.service', () => ({
   notifyCbtfScheduleFailure: vi.fn().mockResolvedValue(true)
@@ -74,7 +76,7 @@ describe('CBTF exam dates versus reservation action dates', () => {
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment as any)
     vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enrollment' } as any)
     vi.mocked(prisma.user.findUnique).mockResolvedValue({ enrollments: [{ role: 'TEACHER' }] } as any)
-    vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
       id: 'reservation', facilityId: 'a', userId: 'student', status: 'SCHEDULED', assignment
@@ -369,13 +371,247 @@ describe('CBTF exam dates versus reservation action dates', () => {
     }
   )
 
-  it('preserves the existing retake-pass exam window override', async () => {
-    vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue({
+  it('reopens availability after the normal action window closes', async () => {
+    vi.setSystemTime(new Date('2030-01-08T09:00:00Z'))
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([{
       id: 'pass', availableFrom: new Date('2030-01-08T09:00:00Z'), acceptUntil: new Date('2030-01-08T10:30:00Z')
-    } as any)
+    } ] as any)
     const { data } = await availabilityGet(event())
     expect(data.studentWindow.isPassWindow).toBe(true)
     expect(data.hourlySlots.every(s => s.startTime === '2030-01-08T09:00:00.000Z' && s.endTime === '2030-01-08T10:30:00.000Z')).toBe(true)
+  })
+
+  describe('Pass-backed retake actions', () => {
+    const now = '2030-01-08T08:30:00Z'
+    const start = '2030-01-08T09:00:00Z'
+    const newStart = '2030-01-08T09:05:00Z'
+    const passStart = new Date('2030-01-08T08:00:00Z')
+    const passEnd = new Date('2030-01-08T13:00:00Z')
+    const original = {
+      id: 'original', assignment, assignmentId, userId: 'student', status: 'CHECKED_OUT',
+      retakeRedemptionId: null, checkedInAt: new Date('2030-01-07T09:00:00Z'),
+      checkedOutAt: new Date('2030-01-07T10:30:00Z')
+    }
+
+    function receipt(id = 'grant', overrides: Record<string, unknown> = {}) {
+      return {
+        id, assignmentId, userId: 'student', courseId: assignment.courseId,
+        extensionOnly: false, extendsCutoffOnly: false,
+        createdAt: passStart, availableFrom: passStart, acceptUntil: passEnd, dueDate: null,
+        ...overrides
+      }
+    }
+
+    function useRetakeStore(grants = [receipt()], initialRows: any[] = [original]) {
+      const rows = initialRows.map((row) => ({ ...row }))
+      const retake = () => rows.find((row) => row.retakeRedemptionId === 'grant')
+      vi.mocked(prisma.passRedemption.findMany).mockImplementation(async ({ where }: any) =>
+        grants.filter((grant) =>
+          grant.assignmentId === where.assignmentId && grant.userId === where.pool.userId &&
+          grant.courseId === where.pool.passType.courseId &&
+          grant.extensionOnly === where.pool.passType.extensionOnly &&
+          grant.extendsCutoffOnly === where.pool.passType.extendsCutoffOnly &&
+          (!where.id || grant.id === where.id)
+        ).map((grant) => ({
+          ...grant,
+          cbtfRetake: rows.find((row) => row.retakeRedemptionId === grant.id) ?? null
+        })) as any
+      )
+      vi.mocked(prisma.cbtfReservation.findFirst).mockImplementation(async ({ where }: any) =>
+        rows.find((row) =>
+          row.userId === where.userId &&
+          (!where.assignmentId || row.assignmentId === where.assignmentId) &&
+          (!where.id || (typeof where.id === 'string' ? row.id === where.id : row.id !== where.id.not)) &&
+          where.status.in.includes(row.status) &&
+          (where.retakeRedemptionId === undefined || where.retakeRedemptionId === row.retakeRedemptionId)
+        ) ?? null
+      )
+      vi.mocked(prisma.cbtfReservation.findUnique).mockImplementation(async ({ where }) =>
+        rows.find((row) => row.id === where.id) ?? null
+      )
+      vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }) => {
+        const row = { ...data, id: 'retake-' + rows.length, assignment }
+        rows.push(row)
+        return row as any
+      })
+      vi.mocked(prisma.cbtfReservation.update).mockImplementation(async ({ where, data }) => {
+        const row = rows.find((entry) => entry.id === where.id)
+        if (!row) throw new Error('Reservation not found')
+        Object.assign(row, data)
+        return row
+      })
+      return { rows, retake }
+    }
+
+    const read = async (excludeReservationId?: string) =>
+      (await availabilityGet({
+        query: { assignmentId, view: 'narrowing', excludeReservationId }
+      } as any)).data
+
+    const move = (id: string, time = newStart) =>
+      reservationPatch({ ...event(time), facilityId: id })
+
+    beforeEach(() => {
+      vi.setSystemTime(new Date(now))
+    })
+
+    it('offers no retake without a matching non-extension grant', async () => {
+      useRetakeStore([
+        receipt('other-student', { userId: 'other' }),
+        receipt('other-assignment', { assignmentId: 'other' }),
+        receipt('other-course', { courseId: 'other' }),
+        receipt('extension', { extensionOnly: true }),
+        receipt('cutoff', { extendsCutoffOnly: true })
+      ])
+      expect(await read()).toMatchObject({ availabilityStatus: 'RETAKE_PASS_REQUIRED', hourlySlots: [] })
+      await expect(reservationsPost(event(start))).rejects.toMatchObject({
+        statusCode: 403, data: { availabilityStatus: 'RETAKE_PASS_REQUIRED' }
+      })
+    })
+
+    it('keeps another student on normal windows', async () => {
+      useRetakeStore([receipt('other-student', { userId: 'other' })], [])
+      expect(await read()).toMatchObject({
+        availabilityStatus: 'RESERVATION_CLOSED', studentWindow: { isPassWindow: false }
+      })
+      await expect(reservationsPost(event(start))).rejects.toMatchObject({ statusCode: 403 })
+
+      vi.setSystemTime(new Date('2030-01-02T00:00:00Z'))
+      await expect(reservationsPost(event())).resolves.toMatchObject({ statusCode: 201 })
+      expect(prisma.cbtfReservation.create).toHaveBeenCalledWith(expect.objectContaining({
+        data: expect.objectContaining({ retakeRedemptionId: null })
+      }))
+    })
+
+    it('uses both pass windows after normal close, and keeps the same grant when moving the booked retake', async () => {
+      const grants = [receipt()]
+      const { retake } = useRetakeStore(grants)
+      const availability = await read()
+      expect(availability).toMatchObject({
+        availabilityStatus: 'AVAILABLE',
+        reservationWindowStatus: 'OPEN',
+        reservationWindow: { start: passStart.toISOString(), end: passEnd.toISOString() },
+        studentWindow: { start: passStart.toISOString(), end: passEnd.toISOString(), isPassWindow: true }
+      })
+      expect(availability.schedulingChoices?.morning[0]?.times.length).toBeGreaterThan(0)
+      const booked = await reservationsPost(event(start))
+      expect(booked.data).not.toHaveProperty('retakeRedemptionId')
+      expect(retake()).toMatchObject({ id: booked.data.id, retakeRedemptionId: 'grant' })
+      grants.unshift(receipt('newer'))
+      expect((await read(booked.data.id)).studentWindow.isPassWindow).toBe(true)
+      await expect(move(booked.data.id)).resolves.toMatchObject({
+        data: { id: booked.data.id, startTime: '2030-01-08T09:05:00.000Z' }
+      })
+      expect(retake()).toMatchObject({ id: booked.data.id, retakeRedemptionId: 'grant' })
+      expect(prisma.cbtfReservation.create).toHaveBeenCalledOnce()
+    })
+
+    it.each(['CHECKED_IN', 'CHECKED_OUT', 'COMPLETED'])(
+      'prevents a second claim after the retake becomes %s', async (status) => {
+        const { rows, retake } = useRetakeStore()
+        await reservationsPost(event(start))
+        Object.assign(retake(), { status, checkedInAt: new Date(start) })
+        expect((await read()).schedulingChoices?.morning ?? []).toEqual([])
+        await expect(reservationsPost(event(newStart))).rejects.toMatchObject({
+          statusCode: status === 'CHECKED_IN' ? 409 : 403
+        })
+        expect(rows).toHaveLength(2)
+        expect(rows[0]).toMatchObject(original)
+      }
+    )
+
+    it('permits a new grant after completion and leaves both historical attempts intact', async () => {
+      const grants = [receipt()]
+      const { rows, retake } = useRetakeStore(grants)
+      await reservationsPost(event(start))
+      Object.assign(retake(), { status: 'COMPLETED' })
+      grants.unshift(receipt('new-grant'))
+      await reservationsPost(event(newStart))
+      expect(rows.map((row) => [row.status, row.retakeRedemptionId])).toEqual([
+        ['CHECKED_OUT', null], ['COMPLETED', 'grant'], ['SCHEDULED', 'new-grant']
+      ])
+    })
+
+    it.each(['CANCELLED', 'MISSED'])(
+      'reuses a %s grant on POST and PATCH, then rejects it after expiry', async (status) => {
+        const { retake } = useRetakeStore()
+        const { data } = await reservationsPost(event(start))
+        if (status === 'CANCELLED') {
+          await expect(reservationDelete({ facilityId: data.id } as any)).resolves.toMatchObject({
+            data: { status: 'CANCELLED' }
+          })
+        } else {
+          Object.assign(retake(), { status })
+        }
+        await expect(reservationsPost(event(newStart))).resolves.toMatchObject({ data: { id: data.id } })
+        Object.assign(retake(), { status })
+        await expect(move(data.id)).resolves.toMatchObject({ data: { id: data.id, status: 'SCHEDULED' } })
+        expect(retake()).toMatchObject({ id: data.id, retakeRedemptionId: 'grant' })
+        expect(prisma.cbtfReservation.create).toHaveBeenCalledOnce()
+        Object.assign(retake(), { status })
+        vi.setSystemTime(new Date(passEnd))
+        expect(await read(data.id)).toMatchObject({ availabilityStatus: 'RETAKE_WINDOW_EXPIRED', hourlySlots: [] })
+        await expect(move(data.id, '2030-01-08T13:05:00Z')).rejects.toMatchObject({
+          statusCode: 403, data: { availabilityStatus: 'RETAKE_WINDOW_EXPIRED' }
+        })
+      }
+    )
+
+    it('uses a new receipt after a missed retake expires without rewriting the expired attempt', async () => {
+      const grants = [receipt()]
+      const { rows, retake } = useRetakeStore(grants)
+      await reservationsPost(event(start))
+      Object.assign(retake(), { status: 'MISSED' })
+      vi.setSystemTime(new Date(passEnd))
+      grants.unshift(receipt('replacement', {
+        createdAt: passEnd, availableFrom: passEnd, acceptUntil: new Date('2030-01-08T17:00:00Z')
+      }))
+
+      await reservationsPost(event('2030-01-08T13:05:00Z'))
+      expect(rows.map((row) => [row.status, row.retakeRedemptionId])).toEqual([
+        ['CHECKED_OUT', null], ['MISSED', 'grant'], ['SCHEDULED', 'replacement']
+      ])
+    })
+
+    it('skips malformed, expired and consumed receipts and chooses the newest usable one', async () => {
+      const { retake } = useRetakeStore([
+        receipt('malformed', { acceptUntil: passStart }),
+        receipt('expired', { acceptUntil: new Date(now) }),
+        receipt('used'),
+        receipt(),
+        receipt('older', { acceptUntil: new Date('2030-01-08T14:00:00Z') })
+      ], [original, { ...original, id: 'used-attempt', retakeRedemptionId: 'used' }])
+      expect((await read()).studentWindow.end).toBe(passEnd.toISOString())
+      await reservationsPost(event(start))
+      expect(retake()).toMatchObject({ retakeRedemptionId: 'grant' })
+    })
+
+    it('allows only one claim when competing transactions both see the same unused receipt', async () => {
+      useRetakeStore()
+      let claimed = false
+      let arrivals = 0
+      let release!: () => void
+      const bothAttemptingCreate = new Promise<void>((resolve) => { release = resolve })
+      vi.mocked(prisma.cbtfReservation.create).mockImplementation(async ({ data }) => {
+        expect((data as any).retakeRedemptionId).toBe('grant')
+        if (++arrivals === 2) release()
+        await bothAttemptingCreate
+        if (claimed) {
+          throw Object.assign(new Error('Unique claim'), {
+            code: 'P2002', meta: { target: ['retakeRedemptionId'] }
+          })
+        }
+        claimed = true
+        return { id: 'claimed', ...data } as any
+      })
+      const attempts = await Promise.allSettled([
+        reservationsPost(event(start)), reservationsPost(event(newStart))
+      ])
+      expect(attempts.filter((result) => result.status === 'fulfilled')).toHaveLength(1)
+      expect(attempts.find((result) => result.status === 'rejected')).toMatchObject({
+        reason: { statusCode: 409, statusMessage: expect.stringContaining('already been claimed') }
+      })
+    })
   })
 
   it.each([

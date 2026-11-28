@@ -330,9 +330,9 @@ const redemptionColumns: any[] = [
     cell: ({ row }: { row: any }) => row.getValue('assignmentTitle') || '—'
   },
   {
-    accessorKey: 'redeemedAt',
+    accessorKey: 'createdAt',
     header: 'Redeemed',
-    cell: dateCellRenderer('redeemedAt')
+    cell: dateCellRenderer('createdAt')
   },
   {
     accessorKey: 'cost',

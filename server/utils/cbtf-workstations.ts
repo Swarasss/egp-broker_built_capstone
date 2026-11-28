@@ -279,6 +279,7 @@ export async function takeSeatOutOfService(
     now?: Date
   }
 ): Promise<SeatMutationResult> {
+  await lockCbtfFacilities(db)
   const now = params.now ?? new Date()
   const facility = await loadFacility(db, params.facilityId)
   ensureSeatNumber(facility, params.seatNumber)
@@ -480,8 +481,8 @@ export async function moveReservationToSeat(
     throw createError({ statusCode: 400, statusMessage: 'Reservation is already on this seat' })
   }
 
-  const updated = await (db as any).cbtfReservation.update({
-    where: { id: reservation.id },
+  const updated = await db.cbtfReservation.update({
+    where: { id: reservation.id, status: reservation.status },
     data: { seatNumber: target },
     include: {
       assignment: { select: { title: true } },
@@ -490,6 +491,11 @@ export async function moveReservationToSeat(
         select: { firstName: true, lastName: true, email: true, studentId: true, avatarUrl: true }
       }
     }
+  }).catch((error) => {
+    if (error?.code === 'P2025') {
+      throw createError({ statusCode: 409, statusMessage: 'Reservation status has changed. Refresh and try again.' })
+    }
+    throw error
   })
   await (db as any).cbtfReservationNote.create({
     data: {

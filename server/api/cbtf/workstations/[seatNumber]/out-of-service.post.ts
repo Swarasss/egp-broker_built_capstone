@@ -6,7 +6,7 @@ import type { ApiResponse } from '@@/shared/types/api'
 
 /**
  * Takes a workstation out of service. Proctors and admins may do this.
- * In-progress and imminent reservations are moved to a spare seat when possible.
+ * Affected reservations are flagged for staff to move.
  */
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   const session = await getUserSession(event)
@@ -34,12 +34,13 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
   }
 
   const result = await prisma.$transaction((tx) =>
-    takeSeatOutOfService(tx as any, {
+    takeSeatOutOfService(tx, {
       facilityId: validation.data.facilityId,
       seatNumber,
       reason: validation.data.reason,
       userId: session.user.id
-    })
+    }),
+    { isolationLevel: 'ReadCommitted' }
   )
 
   return { statusCode: 200, data: result }

@@ -83,6 +83,7 @@ export interface CbtfReservationDto {
   seatNumber: number
   /** True when this reservation's seat is currently out of service (needs staff attention). */
   seatOutOfService?: boolean
+  isRetake?: boolean
   startTime: string
   endTime: string
   status: CbtfReservationStatus
@@ -274,3 +275,5 @@ export type CbtfAvailabilityStatus =
   | 'INVALID_ASSIGNMENT_WINDOW'
   | 'RESERVATION_NOT_OPEN'
   | 'RESERVATION_CLOSED'
+  | 'RETAKE_PASS_REQUIRED'
+  | 'RETAKE_WINDOW_EXPIRED'

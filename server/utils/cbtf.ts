@@ -16,6 +16,7 @@ import {
 import type { Prisma, PrismaClient } from '@prisma/client'
 import prisma from '@@/server/utils/db'
 import { sendCbtfIncidentNotification } from './cbtf-notifications'
+import { cbtfRetakeClaimSelect, cbtfRetakePassType, getOpenCbtfRetakeWindow } from './cbtf-retakes'
 import {
   RECOMMENDATION_LOAD_WINDOW_MS,
   selectRecommendedStarts,
@@ -574,11 +575,30 @@ export function getCbtfReservationWindowStatus(
   return now < start ? 'NOT_YET_OPEN' : 'OPEN'
 }
 
-export function assertCbtfReservationWindowOpen(
-  assignment: Parameters<typeof getCbtfReservationWindowStatus>[0],
-  now = new Date()
-) {
-  if (getCbtfReservationWindowStatus(assignment, now) !== 'OPEN') {
+const cbtfRetakeMessages = {
+  RETAKE_PASS_REQUIRED: 'You have already completed this exam. A retake pass is required to schedule another attempt.',
+  RETAKE_WINDOW_EXPIRED: 'There is no usable retake window for this booking.'
+} as const
+
+type RetakeBlock = keyof typeof cbtfRetakeMessages
+
+interface CbtfSchedulingState {
+  examWindow: StudentSchedulingWindow
+  actionWindow: { scheduleWindowStart: Date | null; scheduleWindowEnd: Date | null }
+  actionStatus: CbtfReservationWindowStatus
+  retakeBlock: RetakeBlock | null
+  reusableRetakeId: string | null
+}
+
+export function assertCbtfSchedulingOpen(state: CbtfSchedulingState) {
+  if (state.retakeBlock) {
+    throw createError({
+      statusCode: 403,
+      statusMessage: cbtfRetakeMessages[state.retakeBlock],
+      data: { availabilityStatus: state.retakeBlock }
+    })
+  }
+  if (state.actionStatus !== 'OPEN') {
     throw createError({
       statusCode: 403,
       statusMessage: 'Reservations can only be created or changed during the Reservation Window'
@@ -586,45 +606,61 @@ export function assertCbtfReservationWindowOpen(
   }
 }
 
-/** Effective exam-taking window, including existing retake-pass overrides. */
-export async function getStudentSchedulingWindow(
+/** Resolve booking eligibility and both student-specific windows from the same receipt. */
+export async function getCbtfSchedulingState(
   userId: string,
   assignment: {
     id: string
+    courseId?: string
     scheduleWindowStart: Date | null
     scheduleWindowEnd: Date | null
     availableFrom: Date | null
-    dueDate: Date | null
     acceptUntil: Date | null
   },
-  tx: Prisma.TransactionClient = prisma
-): Promise<StudentSchedulingWindow> {
-  // Check if student redeemed a pass for this assignment
-  const latestRedemption = await (tx as any).passRedemption.findFirst({
+  tx: Prisma.TransactionClient = prisma,
+  reservation?: { id: string; retakeRedemptionId: string | null } | null,
+  now = new Date()
+): Promise<CbtfSchedulingState> {
+  const pinnedRedemptionId = reservation?.retakeRedemptionId
+  const receipts = await tx.passRedemption.findMany({
     where: {
-      pool: { userId },
-      assignmentId: assignment.id
+      ...(pinnedRedemptionId ? { id: pinnedRedemptionId } : {}),
+      assignmentId: assignment.id,
+      pool: { userId, passType: { ...cbtfRetakePassType, courseId: assignment.courseId } }
     },
-    orderBy: { createdAt: 'desc' }
+    orderBy: [{ createdAt: 'desc' }, { id: 'desc' }],
+    include: { cbtfRetake: { select: cbtfRetakeClaimSelect } }
   })
 
-  if (latestRedemption) {
-    const start = latestRedemption.availableFrom || latestRedemption.createdAt
-    const end = latestRedemption.acceptUntil || latestRedemption.dueDate
-
-    if (start && end && end > start) {
-      return {
-        start,
-        end,
-        isPassWindow: true,
-        redemptionId: latestRedemption.id
-      }
+  for (const receipt of receipts) {
+    const window = getOpenCbtfRetakeWindow(receipt, now, reservation?.id)
+    if (!window) continue
+    return {
+      examWindow: { ...window, isPassWindow: true, redemptionId: receipt.id },
+      actionWindow: { scheduleWindowStart: window.start, scheduleWindowEnd: window.end },
+      actionStatus: 'OPEN',
+      retakeBlock: null,
+      reusableRetakeId: receipt.cbtfRetake?.id ?? null
     }
   }
 
-  // Reservation-window dates govern actions, never the exam's seat occupancy.
-  const start = assignment.availableFrom
-  const end = assignment.acceptUntil
+  const completed = await tx.cbtfReservation.findFirst({
+    where: {
+      userId,
+      assignmentId: assignment.id,
+      status: { in: ['CHECKED_OUT', 'COMPLETED'] }
+    },
+    select: { id: true }
+  })
+  const actionStatus = getCbtfReservationWindowStatus(assignment, now)
+  let retakeBlock: RetakeBlock | null = null
+  if (pinnedRedemptionId || (receipts.length && (completed || actionStatus !== 'OPEN'))) {
+    retakeBlock = 'RETAKE_WINDOW_EXPIRED'
+  } else if (completed) {
+    retakeBlock = 'RETAKE_PASS_REQUIRED'
+  }
+
+  const { availableFrom: start, acceptUntil: end, scheduleWindowStart, scheduleWindowEnd } = assignment
   if (!start || !end || end <= start) {
     throw createError({
       statusCode: 400,
@@ -634,10 +670,11 @@ export async function getStudentSchedulingWindow(
   }
 
   return {
-    start,
-    end,
-    isPassWindow: false,
-    redemptionId: null
+    examWindow: { start, end, isPassWindow: false, redemptionId: null },
+    actionWindow: { scheduleWindowStart, scheduleWindowEnd },
+    actionStatus,
+    retakeBlock,
+    reusableRetakeId: null
   }
 }
 
@@ -1815,7 +1852,7 @@ export async function lookupStudentForProctor(prisma: PrismaClient, studentId: s
  * Checks in a scheduled reservation
  */
 export async function checkInReservation(
-  prisma: PrismaClient,
+  prisma: Prisma.TransactionClient,
   reservationId: string,
   proctorUserId: string,
   verifiedStudentId: string

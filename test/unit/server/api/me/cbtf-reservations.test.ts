@@ -37,7 +37,7 @@ vi.mock('@@/server/utils/db', () => ({
     },
     cbtfScheduleException: { findFirst: vi.fn() },
     cbtfOperatingHours: { findUnique: vi.fn() },
-    passRedemption: { findFirst: vi.fn() },
+    passRedemption: { findMany: vi.fn().mockResolvedValue([]) },
     $queryRaw: vi.fn().mockResolvedValue([]),
     $transaction: vi.fn((cb) => cb(prisma))
   }
@@ -111,6 +111,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
     vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
     vi.mocked(notifyCbtfScheduleSuccess).mockResolvedValue(true as any)
     vi.mocked(notifyCbtfScheduleFailure).mockResolvedValue(true as any)
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
   })
 
@@ -159,7 +160,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
             acceptUntil: new Date('2026-10-01T23:59:00Z')
           } as any)
           vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
-          vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+          vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
           vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
             configuredFacility({ id: 'small', timezone: 'UTC', totalSeats: 1 }, '08:02', '12:15'),
             configuredFacility({ id: 'large', timezone: 'UTC', totalSeats: 57 }, '09:00', '14:00')
@@ -539,7 +540,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
           id: 'res-completed',
           status: 'CHECKED_OUT'
         } as any) // existingCompleted
-      vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null) // no retake pass
+      vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([]) // no retake pass
 
       await expect(reservationsPost(event)).rejects.toThrowError(
         expect.objectContaining({
@@ -578,18 +579,14 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.cbtfReservation.findFirst)
         .mockResolvedValueOnce(null) // existingActive
         .mockResolvedValueOnce(null) // conflictingSlot
-        .mockResolvedValueOnce({
-          id: 'res-completed',
-          status: 'CHECKED_OUT'
-        } as any) // existingCompleted
         .mockResolvedValueOnce(null) // reusableReservation (no CANCELLED/MISSED to reuse)
 
       // Valid retake pass redemption
-      vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue({
+      vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([{
         id: 'red-1',
         availableFrom: new Date('2026-10-01T00:00:00.000Z'),
         acceptUntil: new Date('2026-10-10T00:00:00.000Z')
-      } as any)
+      } ] as any)
 
       mockFacilities(configuredFacility({
         id: 'fac-1',
@@ -650,7 +647,8 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         .mockResolvedValueOnce(null) // existingCompleted
         .mockResolvedValueOnce({
           id: 'res-cancelled',
-          status: 'CANCELLED'
+          status: 'CANCELLED',
+          retakeRedemptionId: null
         } as any) // reusableReservation
 
       mockFacilities(configuredFacility({
@@ -681,7 +679,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       expect(prisma.cbtfReservation.create).not.toHaveBeenCalled()
       expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'res-cancelled' },
+          where: { id: 'res-cancelled', status: 'CANCELLED', AND: [{ retakeRedemptionId: null }] },
           data: expect.objectContaining({ status: 'SCHEDULED' })
         })
       )
@@ -971,7 +969,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
       vi.mocked(prisma.$transaction).mockImplementation((async (cb: any) => cb(prisma)) as any)
       vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enr-1' } as any)
       vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
-      vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+      vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
       vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
@@ -1034,6 +1032,56 @@ describe('API: CBTF Student Reservation Endpoints', () => {
         expect(response.data).toMatchObject({ facilityId: 'fac-a', seatNumber: 2, endTime: '2030-01-07T11:30:00.000Z' })
       })
 
+      it('shifts final placement from Main to Room B as Main fills and favors Main again when load reverses', async () => {
+        const main = configuredFacility({ id: 'fac-a', name: 'Main CBTF', timezone: 'UTC', totalSeats: 48 })
+        const roomB = configuredFacility({ id: 'fac-b', name: 'Room B', timezone: 'UTC', totalSeats: 48 })
+        mockFacilities(main, roomB)
+        const arrivals = (facilityId: string, count: number) =>
+          Array.from({ length: count }, (_, index) => ({
+            facilityId,
+            seatNumber: index + 1,
+            startTime: new Date(startTime),
+            endTime: new Date('2030-01-07T11:30Z')
+          }))
+        const roomBArrivals = arrivals(roomB.id, 1)
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(roomBArrivals as any)
+        const first = await reservationsPost(request())
+        expect(first.data).toMatchObject({ facilityId: main.id, seatNumber: 1 })
+
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+          ...roomBArrivals, ...arrivals(first.data.facilityId, 2)
+        ] as any)
+        await expect(reservationsPost(request())).resolves.toMatchObject({
+          data: { facilityId: roomB.id, seatNumber: 2 }
+        })
+
+        vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+          ...arrivals(main.id, 2), ...arrivals(roomB.id, 3)
+        ] as any)
+        await expect(reservationsPost(request())).resolves.toMatchObject({
+          data: { facilityId: main.id, seatNumber: 3 }
+        })
+      })
+
+      it.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
+        '%s falls back to Room B during an outage and can select Main after return to service', async (_method, handler) => {
+          const main = {
+            ...configuredFacility({ id: 'fac-a', name: 'Main CBTF', timezone: 'UTC', totalSeats: 1 }),
+            seatStatuses: [{ seatNumber: 1, isDisabled: true }]
+          }
+          const roomB = configuredFacility({ id: 'fac-b', name: 'Room B', timezone: 'UTC', totalSeats: 1 })
+          mockFacilities(main, roomB)
+          await expect(handler(request())).resolves.toMatchObject({
+            data: { facilityId: roomB.id, seatNumber: 1 }
+          })
+
+          main.seatStatuses = []
+          await expect(handler(request())).resolves.toMatchObject({
+            data: { facilityId: main.id, seatNumber: 1 }
+          })
+        }
+      )
+
       it('reschedules to the better facility and excludes the current reservation', async () => {
         vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
           { facilityId: 'fac-a', seatNumber: 2, startTime: new Date(startTime), endTime: new Date('2030-01-07T11:30Z') }
@@ -1091,7 +1139,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
 
     it('PATCH persists a new endTime 120 minutes after the new start', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-duration', userId: 'usr-1', status: 'SCHEDULED',
+        id: 'res-duration', userId: 'usr-1', status: 'SCHEDULED', retakeRedemptionId: null,
         startTime: new Date('2030-01-06T10:00:00.000Z'),
         endTime: new Date('2030-01-06T12:00:00.000Z'),
         assignment: assignment(120)
@@ -1106,7 +1154,7 @@ describe('API: CBTF Student Reservation Endpoints', () => {
 
       expect(response.statusCode).toBe(200)
       expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
-        where: { id: 'res-duration', status: 'SCHEDULED' },
+        where: { id: 'res-duration', status: 'SCHEDULED', AND: [{ retakeRedemptionId: null }] },
         data: expect.objectContaining({
           startTime: new Date(startTime), endTime: new Date('2030-01-07T12:00:00.000Z')
         })

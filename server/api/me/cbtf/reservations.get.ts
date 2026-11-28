@@ -20,7 +20,10 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     orderBy: { startTime: 'desc' }
   })
 
-  const data = reservations.map(toCbtfReservationDto)
+  const data = reservations.map((reservation) => ({
+    ...toCbtfReservationDto(reservation),
+    ...(reservation.retakeRedemptionId ? { isRetake: true } : {})
+  }))
   await applySeatOutOfServiceFlags(prisma, data)
 
   return {

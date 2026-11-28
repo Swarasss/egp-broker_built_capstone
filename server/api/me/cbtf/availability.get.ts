@@ -2,8 +2,7 @@ import { defineEventHandler, getQuery, createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import { cbtfAvailabilityQuerySchema } from '@@/shared/schemas/cbtf.schema'
 import {
-  getStudentSchedulingWindow,
-  getCbtfReservationWindowStatus,
+  getCbtfSchedulingState,
   getAllFacilitiesAvailability,
   getStudentAccommodation,
   getEffectiveExamDurationMinutes,
@@ -111,31 +110,34 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
   })
 
   // Only an owned, reschedulable reservation for this assignment may be excluded.
+  let reschedulingReservation = null
   if (query.excludeReservationId) {
-    const reschedulingReservation = await prisma.cbtfReservation.findFirst({
+    reschedulingReservation = await prisma.cbtfReservation.findFirst({
       where: {
         id: query.excludeReservationId,
         userId: session.user.id,
         assignmentId: assignment.id,
         status: { in: ['SCHEDULED', 'MISSED', 'CANCELLED'] }
       },
-      select: { id: true }
+      select: { id: true, retakeRedemptionId: true }
     })
     if (!reschedulingReservation) {
       throw createError({ statusCode: 404, statusMessage: 'Reschedulable reservation not found' })
     }
   }
 
-  const studentWindow = await getStudentSchedulingWindow(session.user.id, assignment)
+  const now = new Date()
+  const scheduling = await getCbtfSchedulingState(
+    session.user.id, assignment, prisma, reschedulingReservation, now
+  )
+  const { examWindow: studentWindow, actionStatus: reservationWindowStatus, actionWindow } = scheduling
   const accommodation = await getStudentAccommodation(session.user.id)
   const effectiveDurationMinutes = getEffectiveExamDurationMinutes(
     assignment.cbtfDurationMinutes,
     accommodation.timeMultiplier
   )
 
-  const now = new Date()
-  const reservationWindowStatus = getCbtfReservationWindowStatus(assignment, now)
-  const availability = reservationWindowStatus === 'OPEN'
+  const availability = !scheduling.retakeBlock && reservationWindowStatus === 'OPEN'
     ? await getAllFacilitiesAvailability(
         studentWindow,
         query.blockId || query.timeOfDayPreference,
@@ -149,12 +151,14 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
         query.view === 'narrowing' ? assignment.id : undefined
       )
     : {
-        availabilityStatus: reservationWindowStatus === 'NOT_YET_OPEN' ? 'RESERVATION_NOT_OPEN' as const : 'RESERVATION_CLOSED' as const,
+        availabilityStatus: scheduling.retakeBlock ??
+          (reservationWindowStatus === 'NOT_YET_OPEN' ? 'RESERVATION_NOT_OPEN' as const : 'RESERVATION_CLOSED' as const),
         facilityDiagnostics: [],
         configuredTotalSeats: null,
         blocks: [],
         recommendedDays: [],
-        hourlySlots: []
+        hourlySlots: [],
+        ...(query.view === 'narrowing' ? { schedulingChoices: { morning: [], afternoon: [] } } : {})
       }
 
   return {
@@ -164,8 +168,8 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
       ...availability,
       reservationWindowStatus,
       reservationWindow: {
-        start: assignment.scheduleWindowStart?.toISOString() ?? null,
-        end: assignment.scheduleWindowEnd?.toISOString() ?? null
+        start: actionWindow.scheduleWindowStart?.toISOString() ?? null,
+        end: actionWindow.scheduleWindowEnd?.toISOString() ?? null
       },
       studentWindow: {
         start: studentWindow.start.toISOString(),

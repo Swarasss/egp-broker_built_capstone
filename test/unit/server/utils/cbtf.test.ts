@@ -6,7 +6,7 @@ import {
   getOffsetSeatIndices,
   assignNextSeat,
   getFacilityOperatingHoursForDate,
-  getStudentSchedulingWindow,
+  getCbtfSchedulingState,
   getRecommendedDaysAndSlots,
   toCbtfReservationDto
 } from '../../../../server/utils/cbtf'
@@ -240,10 +240,11 @@ describe('CBTF Server Utilities', () => {
     })
   })
 
-  describe('getStudentSchedulingWindow', () => {
+  describe('getCbtfSchedulingState', () => {
     it('returns assignment window when student has not redeemed a pass', async () => {
       const mockTx: any = {
-        passRedemption: { findFirst: vi.fn().mockResolvedValue(null) }
+        passRedemption: { findMany: vi.fn().mockResolvedValue([]) },
+        cbtfReservation: { findFirst: vi.fn().mockResolvedValue(null) }
       }
       const assignment = {
         id: 'asg-1',
@@ -254,7 +255,9 @@ describe('CBTF Server Utilities', () => {
         acceptUntil: new Date('2026-09-25T18:00:00.000Z')
       }
 
-      const window = await getStudentSchedulingWindow('usr-1', assignment, mockTx)
+      const { examWindow: window } = await getCbtfSchedulingState(
+        'usr-1', assignment, mockTx, null, new Date('2026-09-22T12:00:00Z')
+      )
       expect(window.isPassWindow).toBe(false)
       expect(window.start.toISOString()).toBe('2026-09-22T08:00:00.000Z')
       expect(window.end.toISOString()).toBe('2026-09-25T18:00:00.000Z')
@@ -263,11 +266,13 @@ describe('CBTF Server Utilities', () => {
     it('returns retake pass window when student redeemed a pass for the assignment', async () => {
       const mockTx: any = {
         passRedemption: {
-          findFirst: vi.fn().mockResolvedValue({
+          findMany: vi.fn().mockResolvedValue([{
             id: 'red-1',
-            availableFrom: new Date('2026-09-22T08:00:00.000Z'),
-            acceptUntil: new Date('2026-09-25T18:00:00.000Z')
-          })
+            availableFrom: null,
+            createdAt: new Date('2026-09-22T08:00:00.000Z'),
+            acceptUntil: null,
+            dueDate: new Date('2026-09-25T18:00:00.000Z')
+          }])
         }
       }
       const assignment = {
@@ -279,7 +284,9 @@ describe('CBTF Server Utilities', () => {
         acceptUntil: new Date('2026-09-20T18:00:00.000Z')
       }
 
-      const window = await getStudentSchedulingWindow('usr-1', assignment, mockTx)
+      const { examWindow: window } = await getCbtfSchedulingState(
+        'usr-1', assignment, mockTx, null, new Date('2026-09-22T12:00:00Z')
+      )
       expect(window.isPassWindow).toBe(true)
       expect(window.redemptionId).toBe('red-1')
       expect(window.start.toISOString()).toBe('2026-09-22T08:00:00.000Z')

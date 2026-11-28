@@ -6,7 +6,7 @@ vi.mock('@@/server/utils/db', () => ({
   default: {
     assignment: { findUnique: vi.fn() },
     enrollment: { findFirst: vi.fn() },
-    passRedemption: { findFirst: vi.fn() },
+    passRedemption: { findMany: vi.fn().mockResolvedValue([]) },
     cbtfReservation: { findFirst: vi.fn(), findMany: vi.fn() },
     cbtfFacility: { findMany: vi.fn() },
     cbtfSeat: { findMany: vi.fn().mockResolvedValue([]) },
@@ -77,7 +77,7 @@ describe('Step 3 student CBTF availability', () => {
     reservations = []
     vi.mocked(prisma.assignment.findUnique).mockResolvedValue(assignment as any)
     vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'enrollment' } as any)
-    vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue(facilities as any)
     vi.mocked(prisma.cbtfSeat.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
@@ -154,11 +154,12 @@ describe('Step 3 student CBTF availability', () => {
   })
 
   it('uses the effective retake window for exact filtering', async () => {
-    vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue({
+    vi.setSystemTime(new Date('2030-01-07T10:15:00Z'))
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([{
       id: 'pass',
       availableFrom: new Date('2030-01-07T10:15:00Z'),
       acceptUntil: new Date('2030-01-07T11:15:00Z')
-    } as any)
+    } ] as any)
     const { data } = await request()
     expect(data.studentWindow.isPassWindow).toBe(true)
     expect(data.hourlySlots).toHaveLength(1)
@@ -512,6 +513,19 @@ describe('Step 3 student CBTF availability', () => {
       isActive: true, requiredSeatProperties: ['SSD'], timeMultiplier: 2
     } as any)
     expect((await requestNarrowing()).data.schedulingChoices).toEqual({ morning: [], afternoon: [] })
+  })
+
+  it('skips a day when only a disabled normal seat and a spare remain', async () => {
+    const facility = {
+      ...facilities[0], totalSeats: 2, seatAllocationOrder: [1, 2],
+      spareSeatCount: 1, spareSeatNumbers: [2],
+      seatStatuses: [{ seatNumber: 1, isDisabled: true }]
+    }
+    vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([facility] as any)
+    expect((await requestNarrowing()).data.schedulingChoices).toEqual({ morning: [], afternoon: [] })
+
+    facility.seatStatuses = []
+    expect((await requestNarrowing()).data.schedulingChoices?.morning).toHaveLength(1)
   })
 
   it('rejects an unknown exclusion ID', async () => {

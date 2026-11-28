@@ -21,7 +21,8 @@ vi.mock('@@/server/utils/db', () => ({
     },
     passType: {
       findMany: vi.fn(),
-      findUnique: vi.fn()
+      findUnique: vi.fn(),
+      findUniqueOrThrow: vi.fn()
     },
     passEligibility: {
       findMany: vi.fn(),
@@ -194,6 +195,7 @@ describe('Assignment Eligibility Logic', () => {
       const passType = {
         id: 'pt1',
         titlePattern: 'Quiz',
+        eligibilities: [],
         course: {
           assignments: [
             { id: 'a1', title: 'Quiz 1' },
@@ -202,8 +204,7 @@ describe('Assignment Eligibility Logic', () => {
         }
       }
 
-      vi.mocked(prisma.passType.findUnique).mockResolvedValue(passType as any)
-      vi.mocked(prisma.passEligibility.findMany).mockResolvedValue([]) // No existing
+      vi.mocked(prisma.passType.findUniqueOrThrow).mockResolvedValue(passType as any)
       vi.mocked(prisma.passEligibility.create).mockResolvedValue({} as any)
 
       // Mock findUnique for recalculations
@@ -216,7 +217,7 @@ describe('Assignment Eligibility Logic', () => {
         passEligibilities: [{ passType: { minDaysPastDue: 1, maxDaysPastDue: 1 } }]
       } as any)
 
-      await syncPassTypeEligibility('pt1')
+      await syncPassTypeEligibility('pt1', prisma)
 
       expect(prisma.passEligibility.create).toHaveBeenCalledTimes(1) // Only for a1
       expect(prisma.assignment.update).toHaveBeenCalledTimes(1) // Only for a1

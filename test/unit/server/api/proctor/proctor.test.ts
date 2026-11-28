@@ -10,6 +10,8 @@ import prisma from '@@/server/utils/db'
 
 vi.mock('@@/server/utils/db', () => ({
   default: {
+    $transaction: vi.fn((run) => run(prisma)),
+    $queryRaw: vi.fn().mockResolvedValue([]),
     cbtfFacility: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
@@ -516,6 +518,22 @@ describe('API: Proctor Operations Endpoints', () => {
   })
 
   describe('Check-In & Check-Out Execution', () => {
+    it('reads the workstation status after acquiring the placement lock', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        id: 'res-1', status: 'SCHEDULED', facilityId: 'fac-b', seatNumber: 10,
+        user: { studentId: '906000001' }
+      } as any)
+      vi.mocked(prisma.$queryRaw).mockImplementationOnce(async () => {
+        vi.mocked(prisma.cbtfSeatStatus.findUnique).mockResolvedValueOnce({ isDisabled: true } as any)
+        return [{ id: 'fac-b' }]
+      })
+
+      await expect(
+        checkInPost(mockEvent('PROCTOR', {}, { reservationId: 'res-1', studentId: '906000001' }))
+      ).rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('out of service') })
+      expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+    })
+
     it.each([checkInPost, checkOutPost])('rejects missing student ID', async (handler) => {
       await expect(
         handler(mockEvent('PROCTOR', {}, { reservationId: 'res-1' }))

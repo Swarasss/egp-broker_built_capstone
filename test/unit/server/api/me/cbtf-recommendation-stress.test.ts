@@ -9,7 +9,7 @@ vi.mock('@@/server/utils/db', () => ({
   default: {
     assignment: { findUnique: vi.fn() },
     enrollment: { findFirst: vi.fn() },
-    passRedemption: { findFirst: vi.fn() },
+    passRedemption: { findMany: vi.fn().mockResolvedValue([]) },
     cbtfStudentAccommodation: { findUnique: vi.fn() },
     cbtfFacility: { findMany: vi.fn() },
     cbtfReservation: { findFirst: vi.fn(), findMany: vi.fn(), create: vi.fn() },
@@ -102,7 +102,7 @@ describe('CBTF recommendation stress regressions', () => {
     rows = []
     vi.stubGlobal('getUserSession', async () => ({ user: { id: userId, globalRole: 'USER' } }))
     vi.mocked(prisma.enrollment.findFirst).mockResolvedValue({ id: 'synthetic-enrollment' } as any)
-    vi.mocked(prisma.passRedemption.findFirst).mockResolvedValue(null)
+    vi.mocked(prisma.passRedemption.findMany).mockResolvedValue([])
     vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
     vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
     vi.mocked(prisma.cbtfReservation.findMany).mockImplementation(

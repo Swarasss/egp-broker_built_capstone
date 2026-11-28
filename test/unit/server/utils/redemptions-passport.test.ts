@@ -51,7 +51,7 @@ vi.mock('@@/server/utils/db', () => ({
     },
     studentPassPool: {
       findUnique: vi.fn(),
-      update: vi.fn()
+      updateMany: vi.fn().mockResolvedValue({ count: 1 })
     },
     assignment: {
       findUnique: vi.fn()
@@ -136,14 +136,14 @@ describe('PassPort Pass Redemption Hook & Fail-Safe Handling', () => {
       id: 'redemption-1',
       cost: 1
     } as any)
-    vi.mocked(prisma.studentPassPool.update).mockResolvedValue({ ...mockPool, balance: 4 } as any)
+    vi.mocked(prisma.studentPassPool.updateMany).mockResolvedValue({ count: 1 })
 
     const result = await redeemPass('user-1', 'asg-1', 'pt-1')
 
     expect(result.id).toBe('redemption-1')
     expect(sendPassPortExtension).not.toHaveBeenCalled()
-    expect(prisma.studentPassPool.update).toHaveBeenCalledWith({
-      where: { id: 'pool-1' },
+    expect(prisma.studentPassPool.updateMany).toHaveBeenCalledWith({
+      where: { id: 'pool-1', balance: { gte: 1 } },
       data: { balance: { decrement: 1 } }
     })
     expect(notifyPassRedemption).toHaveBeenCalled()
@@ -174,7 +174,7 @@ describe('PassPort Pass Redemption Hook & Fail-Safe Handling', () => {
       id: 'redemption-2',
       cost: 1
     } as any)
-    vi.mocked(prisma.studentPassPool.update).mockResolvedValue({ ...mockPool, balance: 4 } as any)
+    vi.mocked(prisma.studentPassPool.updateMany).mockResolvedValue({ count: 1 })
 
     const result = await redeemPass('user-1', 'asg-1', 'pt-1')
 
@@ -197,8 +197,8 @@ describe('PassPort Pass Redemption Hook & Fail-Safe Handling', () => {
       })
     )
     expect(prisma.passRedemption.create).toHaveBeenCalled()
-    expect(prisma.studentPassPool.update).toHaveBeenCalledWith({
-      where: { id: 'pool-1' },
+    expect(prisma.studentPassPool.updateMany).toHaveBeenCalledWith({
+      where: { id: 'pool-1', balance: { gte: 1 } },
       data: { balance: { decrement: 1 } }
     })
     expect(sendPassPortRollback).not.toHaveBeenCalled()
@@ -232,7 +232,7 @@ describe('PassPort Pass Redemption Hook & Fail-Safe Handling', () => {
       })
     )
     expect(sendPassPortExtension).not.toHaveBeenCalled()
-    expect(prisma.studentPassPool.update).not.toHaveBeenCalled()
+    expect(prisma.studentPassPool.updateMany).toHaveBeenCalledOnce()
   })
 
   it('aborts redemption, sends admin alert, and preserves pass balance if tool extension dispatch throws', async () => {
@@ -269,7 +269,7 @@ describe('PassPort Pass Redemption Hook & Fail-Safe Handling', () => {
       })
     )
     expect(prisma.passRedemption.create).not.toHaveBeenCalled()
-    expect(prisma.studentPassPool.update).not.toHaveBeenCalled()
+    expect(prisma.studentPassPool.updateMany).toHaveBeenCalledOnce()
   })
 
   it('dispatches rollback DELETE request if a downstream failure occurs after tool extension dispatch succeeds', async () => {

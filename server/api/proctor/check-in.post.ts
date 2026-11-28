@@ -1,6 +1,7 @@
 import { defineEventHandler, readBody, createError } from 'h3'
 import prisma from '@@/server/utils/db'
 import { checkInReservation } from '@@/server/utils/cbtf'
+import { lockCbtfFacilities } from '@@/server/utils/cbtf-placement'
 import type { ApiResponse } from '@@/shared/types/api'
 
 export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
@@ -26,12 +27,10 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     throw createError({ statusCode: 400, statusMessage: 'Student ID is required' })
   }
 
-  const updated = await checkInReservation(
-    prisma as any,
-    reservationId,
-    session.user.id,
-    studentId.trim()
-  )
+  const updated = await prisma.$transaction(async (tx) => {
+    await lockCbtfFacilities(tx)
+    return checkInReservation(tx, reservationId, session.user.id, studentId.trim())
+  }, { isolationLevel: 'ReadCommitted' })
 
   return {
     statusCode: 200,

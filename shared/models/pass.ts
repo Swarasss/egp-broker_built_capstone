@@ -21,6 +21,13 @@ export interface SimplePassPool {
 
 export const redemptionRowSchema = z.object({
   id: z.string(),
+  assignmentId: z.string().optional(),
+  cbtfRetakeRedemptionBlockedUntil: z.string().nullable().optional(),
+  cbtfRetakeWindow: z.object({
+    start: z.string(),
+    end: z.string(),
+    reservationId: z.string().nullable()
+  }).nullable().optional(),
   assignmentTitle: z.string().nullable(),
   createdAt: z.string(),
   cost: z.number(),
@@ -59,6 +66,7 @@ export type PassTypeData = z.infer<typeof passTypeDataSchema>
 
 export const createPassTypeSchema = z.object({
   name: z.string().min(1, 'Name is required'),
+  assignmentIds: z.array(z.string().min(1)).optional(),
   description: z.string().optional().nullable(),
   extensionOnly: z.boolean().default(false),
   extendsCutoffOnly: z.boolean().default(false),

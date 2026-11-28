@@ -21,114 +21,86 @@
             :placeholder="$t('admin.passType.descriptionPlaceholder')"
           />
 
-          <BaseFormInput
-            v-model="state.titlePattern"
-            name="titlePattern"
-            :label="$t('admin.passType.titlePatternLabel')"
-            :placeholder="$t('admin.passType.titlePatternPlaceholder')"
-            :description="$t('admin.passType.titlePatternDescription')"
-          />
+          <UFormField
+            :label="t('admin.passType.assignmentLabel')"
+            :description="t('admin.passType.assignmentDescription')"
+            name="assignmentIds"
+          >
+            <USelectMenu
+              v-model="selectedAssignmentIds"
+              :items="assignmentOptions"
+              value-key="value"
+              multiple
+              :disabled="!assignments"
+              :placeholder="t('admin.passType.assignmentPlaceholder')"
+              class="w-full"
+            />
+          </UFormField>
 
           <div class="grid grid-cols-2 gap-4">
-            <BaseFormInput
-              v-model.number="state.initialBalance"
-              name="initialBalance"
-              :label="$t('admin.passType.initialBalanceLabel')"
-              type="number"
-              min="0"
-            />
-            <BaseFormInput
-              v-model.number="state.hoursPerPass"
-              name="hoursPerPass"
-              :label="$t('admin.passType.hoursPerPassLabel')"
-              type="number"
-              step="0.5"
-              min="0"
-            />
+            <UFormField
+              v-for="field in basicNumbers"
+              :key="field.key"
+              :name="field.key"
+              :label="t(field.label)"
+              required
+            >
+              <UInput
+                v-model="state[field.key]"
+                :inputmode="field.decimal ? 'decimal' : 'numeric'"
+                class="w-full"
+              />
+            </UFormField>
           </div>
 
-          <div class="grid grid-cols-2 gap-4">
-            <BaseFormInput
-              v-model.number="state.minDaysPastDue"
-              name="minDaysPastDue"
-              :label="$t('admin.passType.minDaysPastDueLabel')"
-              type="number"
-              min="0"
-              :placeholder="$t('admin.passType.nonePlaceholder')"
-            />
-            <BaseFormInput
-              v-model.number="state.maxDaysPastDue"
-              name="maxDaysPastDue"
-              :label="$t('admin.passType.maxDaysPastDueLabel')"
-              type="number"
-              min="0"
-              :placeholder="$t('admin.passType.nonePlaceholder')"
-            />
-          </div>
+          <UFormField
+            :label="t('admin.passType.purposeLabel')"
+            :description="state.purpose === 'retake' ? t('admin.passType.retakeDescription') : undefined"
+            name="purpose"
+          >
+            <USelect v-model="state.purpose" :items="purposeOptions" class="w-full" />
+          </UFormField>
 
-          <div class="border-t pt-4">
-            <h3 class="text-sm font-semibold mb-3">
-              {{ $t('admin.passType.coolDownSettingsTitle') }}
-            </h3>
-            <div class="grid grid-cols-2 gap-4">
+          <UFormField
+            :label="t('admin.passType.allowRequestsLabel')"
+            :description="t('admin.passType.allowRequestsDescription')"
+          >
+            <USwitch v-model="state.allowRequests" />
+          </UFormField>
+
+          <details :open="advancedOpen" @toggle="advancedOpen = ($event.currentTarget as HTMLDetailsElement).open">
+            <summary class="cursor-pointer font-semibold">{{ t('admin.passType.advancedSettings') }}</summary>
+            <div class="space-y-4 pt-4">
               <BaseFormInput
-                v-model.number="state.coolDownPeriod"
-                name="coolDownPeriod"
-                :label="$t('admin.passType.periodLabel')"
-                type="number"
-                min="0"
-                :placeholder="$t('admin.passType.nonePlaceholder')"
+                v-model="state.titlePattern"
+                name="titlePattern"
+                :label="t('admin.passType.titlePatternLabel')"
+                :placeholder="t('admin.passType.titlePatternPlaceholder')"
+                :description="t('admin.passType.titlePatternDescription')"
               />
-              <UFormField :label="$t('admin.passType.unitLabel')" name="coolDownUnit">
-                <USelect
-                  v-model="state.coolDownUnit"
-                  :items="['HOUR', 'DAY', 'WEEK']"
-                  :placeholder="$t('admin.passType.nonePlaceholder')"
-                />
-              </UFormField>
-              <UFormField :label="$t('admin.passType.resetLabel')" name="coolDownReset">
-                <USelect
-                  v-model="state.coolDownReset"
-                  :items="['HOUR', 'DAY', 'WEEK']"
-                  :placeholder="$t('admin.passType.nonePlaceholder')"
-                />
-              </UFormField>
-              <BaseFormInput
-                v-model.number="state.coolDownResetOffset"
-                name="coolDownResetOffset"
-                :label="$t('admin.passType.resetOffsetLabel')"
-                type="number"
-                min="0"
-                :placeholder="$t('admin.passType.nonePlaceholder')"
-              />
+              <div class="grid grid-cols-2 gap-4">
+                <UFormField
+                  v-for="field in advancedNumbers"
+                  :key="field.key"
+                  :name="field.key"
+                  :label="t(field.label)"
+                >
+                  <UInput
+                    v-model="state[field.key]"
+                    inputmode="numeric"
+                    class="w-full"
+                    :placeholder="t('admin.passType.nonePlaceholder')"
+                  />
+                </UFormField>
+                <UFormField :label="t('admin.passType.unitLabel')" name="coolDownUnit">
+                  <USelect v-model="state.coolDownUnit" :items="coolDownOptions" class="w-full" />
+                </UFormField>
+                <UFormField :label="t('admin.passType.resetLabel')" name="coolDownReset">
+                  <USelect v-model="state.coolDownReset" :items="coolDownOptions" class="w-full" />
+                </UFormField>
+              </div>
             </div>
-            <p class="text-xs text-neutral-500 mt-2">
-              {{ $t('admin.passType.coolDownDescription') }}
-            </p>
-          </div>
-
-          <div class="flex flex-col gap-4">
-            <UFormField
-              :label="$t('admin.passType.extensionOnlyLabel')"
-              :description="$t('admin.passType.extensionOnlyDescription')"
-            >
-              <USwitch v-model="state.extensionOnly" />
-            </UFormField>
-
-            <UFormField
-              :label="$t('admin.passType.extendsCutoffOnlyLabel')"
-              :description="$t('admin.passType.extendsCutoffOnlyDescription')"
-            >
-              <USwitch v-model="state.extendsCutoffOnly" />
-            </UFormField>
-
-            <UFormField
-              :label="$t('admin.passType.allowRequestsLabel')"
-              :description="$t('admin.passType.allowRequestsDescription')"
-            >
-              <USwitch v-model="state.allowRequests" />
-            </UFormField>
-          </div>
+          </details>
         </div>
       </UForm>
     </template>
@@ -157,13 +129,15 @@
 </template>
 
 <script setup lang="ts">
-import type { PassTypeData } from '@@/shared/models/pass'
+import type { AssignmentRow } from '@@/shared/models/assignment'
+import { createPassTypeSchema, type PassTypeData } from '@@/shared/models/pass'
 
 const { success, error: showError } = useNotifications()
 const { t } = useI18n()
 
 const props = defineProps<{
   passType: PassTypeData | null
+  assignments?: AssignmentRow[]
 }>()
 
 const emit = defineEmits<{
@@ -172,107 +146,182 @@ const emit = defineEmits<{
 }>()
 
 const open = defineModel<boolean>('open', { required: true })
-
 const formRef = useTemplateRef('formRef')
 const saving = ref(false)
-
+const advancedOpen = ref(false)
+const chosenAssignmentIds = ref<string[]>()
 const isEdit = computed(() => !!props.passType)
-const panelDescription = computed(() => {
-  if (isEdit.value) return props.passType?.name || 'Pass Type'
-  return t('admin.passType.panelDescriptionCreate')
+const panelDescription = computed(() =>
+  props.passType?.name || t('admin.passType.panelDescriptionCreate')
+)
+
+const basicNumbers = [
+  { key: 'initialBalance', label: 'admin.passType.initialBalanceLabel', decimal: false },
+  { key: 'hoursPerPass', label: 'admin.passType.hoursPerPassLabel', decimal: true }
+] as const
+const advancedNumbers = [
+  { key: 'minDaysPastDue', label: 'admin.passType.minDaysPastDueLabel' },
+  { key: 'maxDaysPastDue', label: 'admin.passType.maxDaysPastDueLabel' },
+  { key: 'coolDownPeriod', label: 'admin.passType.periodLabel' },
+  { key: 'coolDownResetOffset', label: 'admin.passType.resetOffsetLabel' }
+] as const
+
+const purposeFlags = {
+  retake: { extensionOnly: false, extendsCutoffOnly: false },
+  extension: { extensionOnly: true, extendsCutoffOnly: false },
+  cutoff: { extensionOnly: false, extendsCutoffOnly: true },
+  legacy: { extensionOnly: true, extendsCutoffOnly: true }
+}
+type Purpose = keyof typeof purposeFlags
+type CoolDownUnit = NonNullable<PassTypeData['coolDownUnit']>
+
+const purposeOptions = computed<{ value: Purpose; label: string }[]>(() => [
+  { value: 'retake', label: t('admin.passType.purposeRetake') },
+  { value: 'extension', label: t('admin.passType.purposeExtension') },
+  { value: 'cutoff', label: t('admin.passType.purposeCutoff') },
+  ...(props.passType?.extensionOnly && props.passType.extendsCutoffOnly
+    ? [{ value: 'legacy' as const, label: t('admin.passType.purposeLegacy') }]
+    : [])
+])
+
+const coolDownOptions = computed(() => [
+  { label: t('admin.passType.nonePlaceholder'), value: 'none' as const },
+  ...(['HOUR', 'DAY', 'WEEK'] as const).map((value) => ({ label: value, value }))
+])
+
+const assignmentOptions = computed(() => {
+  const assignments = props.assignments ?? []
+  const titleCounts = new Map<string | null, number>()
+  for (const { title } of assignments) {
+    titleCounts.set(title, (titleCounts.get(title) ?? 0) + 1)
+  }
+  return assignments.map(({ id, title }) => ({
+    value: id,
+    label: title && titleCounts.get(title) === 1
+      ? title
+      : `${title ?? t('admin.passType.untitledAssignment')} (${id})`
+  }))
+})
+
+const selectedAssignmentIds = computed({
+  get: () => chosenAssignmentIds.value ?? (props.assignments ?? [])
+    .filter((assignment) => assignment.eligibilities?.some((entry) =>
+      entry.passTypeId === props.passType?.id && !entry.isAutomatic
+    ))
+    .map(({ id }) => id),
+  set: (ids: string[]) => { chosenAssignmentIds.value = ids }
 })
 
 const state = reactive({
   name: '',
   description: '',
   titlePattern: '',
-  initialBalance: 3,
-  hoursPerPass: 24,
-  extensionOnly: false,
-  extendsCutoffOnly: false,
+  initialBalance: '3',
+  hoursPerPass: '24',
+  purpose: 'retake' as Purpose,
   allowRequests: false,
-  minDaysPastDue: null as number | null,
-  maxDaysPastDue: null as number | null,
-  coolDownPeriod: undefined as any,
-  coolDownUnit: undefined as string | undefined,
-  coolDownReset: undefined as string | undefined,
-  coolDownResetOffset: undefined as any
+  minDaysPastDue: '',
+  maxDaysPastDue: '',
+  coolDownPeriod: '',
+  coolDownUnit: 'none' as CoolDownUnit | 'none',
+  coolDownReset: 'none' as CoolDownUnit | 'none',
+  coolDownResetOffset: ''
 })
 
-// Sync form state when the passType prop changes or the panel opens
-watch(
-  [() => props.passType, open],
-  ([passType, isOpen]: [PassTypeData | null, boolean]) => {
-    if (isOpen && passType) {
-      state.name = passType.name
-      state.description = passType.description ?? ''
-      state.titlePattern = passType.titlePattern ?? ''
-      state.initialBalance = passType.initialBalance
-      state.hoursPerPass = passType.hoursPerPass
-      state.extensionOnly = passType.extensionOnly
-      state.extendsCutoffOnly = passType.extendsCutoffOnly ?? false
-      state.allowRequests = passType.allowRequests
-      state.minDaysPastDue = passType.minDaysPastDue
-      state.maxDaysPastDue = passType.maxDaysPastDue
-      state.coolDownPeriod = passType.coolDownPeriod ?? undefined
-      state.coolDownUnit = passType.coolDownUnit ?? undefined
-      state.coolDownReset = passType.coolDownReset ?? undefined
-      state.coolDownResetOffset = passType.coolDownResetOffset ?? undefined
-    } else if (isOpen && !passType) {
-      state.name = ''
-      state.description = ''
-      state.titlePattern = ''
-      state.initialBalance = 3
-      state.hoursPerPass = 24
-      state.extensionOnly = false
-      state.extendsCutoffOnly = false
-      state.allowRequests = false
-      state.minDaysPastDue = null
-      state.maxDaysPastDue = null
-      state.coolDownPeriod = undefined
-      state.coolDownUnit = undefined
-      state.coolDownReset = undefined
-      state.coolDownResetOffset = undefined
+watch([() => props.passType, open], ([passType, isOpen]) => {
+  if (!isOpen) return
+  chosenAssignmentIds.value = undefined
+  for (const { key } of basicNumbers) {
+    state[key] = String(passType?.[key] ?? (key === 'initialBalance' ? 3 : 24))
+  }
+  for (const { key } of advancedNumbers) {
+    state[key] = String(passType?.[key] ?? '')
+  }
+  state.name = passType?.name ?? ''
+  state.description = passType?.description ?? ''
+  state.titlePattern = passType?.titlePattern ?? ''
+  state.purpose = passType?.extensionOnly
+    ? (passType.extendsCutoffOnly ? 'legacy' : 'extension')
+    : (passType?.extendsCutoffOnly ? 'cutoff' : 'retake')
+  state.allowRequests = passType?.allowRequests ?? false
+  state.coolDownUnit = passType?.coolDownUnit ?? 'none'
+  state.coolDownReset = passType?.coolDownReset ?? 'none'
+  advancedOpen.value = !!state.titlePattern || advancedNumbers.some(({ key }) => state[key] !== '') ||
+    state.coolDownUnit !== 'none' || state.coolDownReset !== 'none'
+}, { immediate: true })
+
+class FormError extends Error {}
+
+function readNumber(field: (typeof basicNumbers)[number] | (typeof advancedNumbers)[number], optional = false) {
+  const value = String(state[field.key] ?? '').trim()
+  const label = t(field.label)
+  if (!value) {
+    if (optional) return null
+    throw new FormError(t('admin.passType.fieldRequired', { label }))
+  }
+
+  const amount = Number(value)
+  if (!/^[+-]?(?:\d+(?:\.\d*)?|\.\d+)$/.test(value) || !Number.isFinite(amount)) {
+    throw new FormError(t('admin.passType.fieldNumber', { label }))
+  }
+  if (amount < 0 || (!('decimal' in field && field.decimal) && !Number.isSafeInteger(amount))) {
+    throw new FormError(t(
+      'decimal' in field && field.decimal ? 'admin.passType.fieldNonnegative' : 'admin.passType.fieldWhole',
+      { label }
+    ))
+  }
+  return amount
+}
+
+function buildBody() {
+  const name = state.name.trim()
+  if (!name) {
+    throw new FormError(t('admin.passType.fieldRequired', { label: t('admin.passType.nameLabel') }))
+  }
+  const titlePattern = state.titlePattern.trim() || null
+  if (titlePattern) {
+    try {
+      new RegExp(titlePattern)
+    } catch {
+      throw new FormError(t('admin.passType.invalidPattern'))
     }
-  },
-  { immediate: true }
-)
+  }
+  if (!isEdit.value && !titlePattern && !selectedAssignmentIds.value.length) {
+    throw new FormError(t('admin.passType.assignmentRequired'))
+  }
+  const assignmentIds = isEdit.value ? chosenAssignmentIds.value : selectedAssignmentIds.value
+  const result = createPassTypeSchema.safeParse({
+    name,
+    description: state.description || null,
+    titlePattern,
+    ...purposeFlags[state.purpose],
+    allowRequests: state.allowRequests,
+    ...(props.assignments && assignmentIds !== undefined ? { assignmentIds } : {}),
+    ...Object.fromEntries(basicNumbers.map(field => [field.key, readNumber(field)])),
+    ...Object.fromEntries(advancedNumbers.map(field => [field.key, readNumber(field, true)])),
+    coolDownUnit: state.coolDownUnit === 'none' ? null : state.coolDownUnit,
+    coolDownReset: state.coolDownReset === 'none' ? null : state.coolDownReset
+  })
+  if (!result.success) throw new FormError(t('admin.passType.invalidForm'))
+  return result.data
+}
 
 const handleSubmit = async () => {
+  if (saving.value) return
   saving.value = true
   try {
-    const body = {
-      name: state.name,
-      description: state.description || null,
-      titlePattern: state.titlePattern || null,
-      initialBalance: state.initialBalance,
-      hoursPerPass: state.hoursPerPass,
-      extensionOnly: state.extensionOnly,
-      extendsCutoffOnly: state.extendsCutoffOnly,
-      allowRequests: state.allowRequests,
-      minDaysPastDue: state.minDaysPastDue,
-      maxDaysPastDue: state.maxDaysPastDue,
-      coolDownPeriod: state.coolDownPeriod ? Number(state.coolDownPeriod) : null,
-      coolDownUnit: (state.coolDownUnit as 'HOUR' | 'DAY' | 'WEEK' | undefined) ?? null,
-      coolDownReset: (state.coolDownReset as 'HOUR' | 'DAY' | 'WEEK' | undefined) ?? null,
-      coolDownResetOffset: state.coolDownResetOffset ? Number(state.coolDownResetOffset) : null
-    }
-
-    if (isEdit.value) {
-      await $fetch(`/api/me/pass-types/${props.passType!.id}`, {
-        method: 'PATCH',
-        body
-      })
+    const body = buildBody()
+    const passType = props.passType
+    if (passType) {
+      await $fetch(`/api/me/pass-types/${passType.id}`, { method: 'PATCH', body })
       success({
         title: t('admin.passType.notifications.updatedTitle'),
         message: t('admin.passType.notifications.updatedMessage')
       })
-      emit('saved', props.passType!.id, body)
+      const { assignmentIds, ...updates } = body
+      emit('saved', passType.id, updates)
     } else {
-      await $fetch('/api/me/pass-types', {
-        method: 'POST',
-        body
-      })
+      await $fetch('/api/me/pass-types', { method: 'POST', body })
       success({
         title: t('admin.passType.notifications.createdTitle'),
         message: t('admin.passType.notifications.createdMessage')
@@ -280,12 +329,19 @@ const handleSubmit = async () => {
       emit('created')
     }
     open.value = false
-  } catch (err: any) {
+  } catch (err: unknown) {
+    const response = (err as { data?: { statusCode?: number; data?: { reason?: string } } })?.data
+    let message = t('admin.passType.notifications.errorDefault')
+    if (err instanceof FormError) {
+      message = err.message
+    } else if (response?.data?.reason === 'INVALID_ASSIGNMENT_SELECTION') {
+      message = t('admin.passType.invalidAssignments')
+    } else if (response?.statusCode === 400) {
+      message = t('admin.passType.invalidForm')
+    }
     showError({
-      title: isEdit.value
-        ? t('admin.passType.notifications.updateFailedTitle')
-        : t('admin.passType.notifications.createFailedTitle'),
-      message: err?.data?.message || t('admin.passType.notifications.errorDefault')
+      title: t(isEdit.value ? 'admin.passType.notifications.updateFailedTitle' : 'admin.passType.notifications.createFailedTitle'),
+      message
     })
   } finally {
     saving.value = false

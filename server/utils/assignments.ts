@@ -1,3 +1,5 @@
+import { createError } from 'h3'
+import type { Prisma } from '@prisma/client'
 import prisma from '@@/server/utils/db'
 import type { AssignmentRow, CreateAssignmentData } from '@@/shared/models/assignment'
 import { resolveStudentEffectiveDates } from '@@/server/utils/overrides'
@@ -186,89 +188,60 @@ export async function syncAssignmentEligibility(assignmentId: string) {
  * Synchronizes a specific pass type with all assignments in its course.
  * Used when a pass type is created or updated.
  */
-export async function syncPassTypeEligibility(passTypeId: string) {
-  const passType = await prisma.passType.findUnique({
+export async function syncPassTypeEligibility(
+  passTypeId: string,
+  tx: Prisma.TransactionClient = prisma,
+  assignmentIds?: string[]
+) {
+  const passType = await tx.passType.findUniqueOrThrow({
     where: { id: passTypeId },
-    include: { course: { include: { assignments: true } } }
-  })
-
-  if (!passType) return
-
-  const assignments = passType.course.assignments
-  const operations: any[] = []
-  const affectedAssignmentIds = new Set<string>()
-
-  // If no pattern, we should remove ALL automatic eligibilities for this pass type
-  if (!passType.titlePattern) {
-    const autoEligibilities = await prisma.passEligibility.findMany({
-      where: {
-        passTypeId: passType.id,
-        isAutomatic: true
-      },
-      select: { id: true, assignmentId: true }
-    })
-
-    if (autoEligibilities.length > 0) {
-      // Mark all affected assignments
-      autoEligibilities.forEach((e) => {
-        if (e.assignmentId) affectedAssignmentIds.add(e.assignmentId)
-      })
-
-      // Delete eligibilities
-      await prisma.passEligibility.deleteMany({
-        where: {
-          id: { in: autoEligibilities.map((e) => e.id) }
-        }
-      })
+    include: {
+      course: { include: { assignments: { select: { id: true, title: true } } } },
+      eligibilities: true
     }
-  } else {
-    // Pattern exists, sync logic
-    const existingEligibilities = await prisma.passEligibility.findMany({
-      where: { passTypeId: passType.id },
-      select: { id: true, assignmentId: true, isAutomatic: true }
+  })
+  const assignments = passType.course.assignments
+  const courseAssignmentIds = new Set(assignments.map(({ id }) => id))
+  const explicit = assignmentIds === undefined ? null : new Set(assignmentIds)
+  if (explicit && [...explicit].some((id) => !courseAssignmentIds.has(id))) {
+    throw createError({
+      statusCode: 400,
+      statusMessage: 'Choose assignments from this course.',
+      data: { reason: 'INVALID_ASSIGNMENT_SELECTION' }
     })
+  }
 
-    const eligibilityMap = new Map(existingEligibilities.map((e) => [e.assignmentId, e]))
+  const byAssignment = Map.groupBy(passType.eligibilities, (entry) => entry.assignmentId)
+  for (const assignment of assignments) {
+    const existing = byAssignment.get(assignment.id) ?? []
+    const manual = explicit?.has(assignment.id) ?? existing.some((entry) => !entry.isAutomatic)
+    const automatic = !!(
+      passType.titlePattern && assignment.title &&
+      matchesTitlePattern(passType.titlePattern, assignment.title)
+    )
+    if (!existing.length && !manual && !automatic) continue
 
-    for (const assignment of assignments) {
-      if (!assignment.title) continue
-
-      const matches = matchesTitlePattern(passType.titlePattern, assignment.title)
-      const existing = eligibilityMap.get(assignment.id)
-
-      if (matches) {
-        if (!existing) {
-          operations.push(
-            prisma.passEligibility.create({
-              data: {
-                passTypeId: passType.id,
-                assignmentId: assignment.id,
-                isAutomatic: true
-              }
-            })
-          )
-          affectedAssignmentIds.add(assignment.id)
-        }
-      } else {
-        if (existing && existing.isAutomatic) {
-          operations.push(
-            prisma.passEligibility.delete({
-              where: { id: existing.id }
-            })
-          )
-          affectedAssignmentIds.add(assignment.id!) // assignmentId should be present
-        }
+    if (!manual && !automatic) {
+      await tx.passEligibility.deleteMany({
+        where: { id: { in: existing.map(({ id }) => id) } }
+      })
+    } else if (!existing.length) {
+      await tx.passEligibility.create({
+        data: { passTypeId, assignmentId: assignment.id, isAutomatic: !manual }
+      })
+    } else {
+      const keep = existing.find((entry) => entry.isAutomatic === !manual) ?? existing[0]!
+      if (keep.isAutomatic !== !manual) {
+        await tx.passEligibility.update({ where: { id: keep.id }, data: { isAutomatic: !manual } })
+      }
+      if (existing.length > 1) {
+        await tx.passEligibility.deleteMany({
+          where: { id: { in: existing.filter(({ id }) => id !== keep.id).map(({ id }) => id) } }
+        })
       }
     }
-  }
 
-  if (operations.length > 0) {
-    await prisma.$transaction(operations)
-  }
-
-  // Recalculate dates for ALL affected assignments
-  for (const assignmentId of affectedAssignmentIds) {
-    await recalculateAssignmentEligibleDates(assignmentId)
+    await recalculateAssignmentEligibleDates(assignment.id, tx)
   }
 }
 

@@ -480,8 +480,66 @@ describe('CBTF workstations', () => {
     })
     expect(db.$queryRaw).toHaveBeenCalled()
     expect(dto.seatNumber).toBe(19)
+    expect(dto).toMatchObject({
+      id: 'r1',
+      facilityId: store.facility.id,
+      startTime: at(1).toISOString(),
+      endTime: at(2).toISOString()
+    })
     expect(store.reservations[0]?.seatNumber).toBe(19)
     expect(store.notes).toHaveLength(1)
+  })
+
+  it('skips an out-of-service spare when automatically picking the replacement', async () => {
+    const store = createStore({
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }, { seatNumber: 19, isDisabled: true }],
+      reservations: [{
+        id: 'r1', userId: 'u1', assignmentId: 'a1', seatNumber: 5,
+        status: 'SCHEDULED', startTime: at(1), endTime: at(2)
+      }]
+    })
+    const db = createDb(store)
+    await expect(moveReservationToSeat(db as any, { reservationId: 'r1', userId: 'proctor-1' }))
+      .resolves.toMatchObject({ seatNumber: 20 })
+  })
+
+  it('blocks both move modes from using an overlapping seat in the same facility', async () => {
+    const exam = {
+      userId: 'u1', assignmentId: 'a1', status: 'SCHEDULED',
+      startTime: at(1), endTime: at(2)
+    }
+    const store = createStore({
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }],
+      reservations: [
+        { ...exam, id: 'r1', seatNumber: 5 },
+        { ...exam, id: 'local', seatNumber: 19, startTime: at(1.5), endTime: at(3) },
+        { ...exam, id: 'other-room', facilityId: 'fac-2', seatNumber: 20 }
+      ]
+    })
+    const db = createDb(store)
+    const params = { reservationId: 'r1', userId: 'proctor-1' }
+    await expect(moveReservationToSeat(db as any, { ...params, targetSeatNumber: 19 }))
+      .rejects.toMatchObject({ statusCode: 409, message: expect.stringContaining('occupied') })
+    await expect(moveReservationToSeat(db as any, params))
+      .resolves.toMatchObject({ id: 'r1', facilityId: 'fac-1', seatNumber: 20 })
+  })
+
+  it('rejects a move and skips the note when a concurrent status change wins', async () => {
+    const store = createStore({
+      seatStatuses: [{ seatNumber: 5, isDisabled: true }],
+      reservations: [{
+        id: 'r1', userId: 'u1', assignmentId: 'a1', seatNumber: 5,
+        status: 'CHECKED_IN', startTime: at(1), endTime: at(2)
+      }]
+    })
+    const db = createDb(store)
+    db.cbtfReservation.update.mockRejectedValueOnce({ code: 'P2025' })
+    await expect(moveReservationToSeat(db as any, { reservationId: 'r1', userId: 'proctor-1' }))
+      .rejects.toMatchObject({ statusCode: 409 })
+    expect(db.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
+      where: { id: 'r1', status: 'CHECKED_IN' }
+    }))
+    expect(store.notes).toHaveLength(0)
   })
 
   it('rejects moving to an out-of-service seat', async () => {

@@ -1,4 +1,5 @@
-import { defineEventHandler, readValidatedBody } from 'h3'
+import { createError, defineEventHandler, readValidatedBody } from 'h3'
+import { syncPassTypeEligibility } from '@@/server/utils/assignments'
 import prisma from '@@/server/utils/db'
 import type { ApiResponse } from '@@/shared/types/api'
 import { createPassTypeSchema } from '@@/shared/models/pass'
@@ -36,13 +37,13 @@ export default defineEventHandler(async (event): Promise<ApiResponse<any>> => {
     })
   }
 
-  const body = await readValidatedBody(event, createPassTypeSchema.parse)
-
-  const passType = await prisma.passType.create({
-    data: {
-      ...body,
-      courseId
+  const { assignmentIds, ...body } = await readValidatedBody(event, createPassTypeSchema.parse)
+  const passType = await prisma.$transaction(async (tx) => {
+    const created = await tx.passType.create({ data: { ...body, courseId } })
+    if (assignmentIds?.length || body.titlePattern) {
+      await syncPassTypeEligibility(created.id, tx, assignmentIds)
     }
+    return created
   })
 
   return {
