@@ -119,7 +119,7 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
         assignmentId: assignment.id,
         status: { in: ['SCHEDULED', 'MISSED', 'CANCELLED'] }
       },
-      select: { id: true, retakeRedemptionId: true }
+      select: { id: true, retakeRedemptionId: true, status: true }
     })
     if (!reschedulingReservation) {
       throw createError({ statusCode: 404, statusMessage: 'Reschedulable reservation not found' })
@@ -127,15 +127,16 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfAvailab
   }
 
   const now = new Date()
-  const scheduling = await getCbtfSchedulingState(
-    session.user.id, assignment, prisma, reschedulingReservation, now
-  )
-  const { examWindow: studentWindow, actionStatus: reservationWindowStatus, actionWindow } = scheduling
   const accommodation = await getStudentAccommodation(session.user.id)
   const effectiveDurationMinutes = getEffectiveExamDurationMinutes(
     assignment.cbtfDurationMinutes,
     accommodation.timeMultiplier
   )
+
+  const scheduling = await getCbtfSchedulingState(
+    session.user.id, assignment, prisma, reschedulingReservation, now, effectiveDurationMinutes
+  )
+  const { examWindow: studentWindow, actionStatus: reservationWindowStatus, actionWindow } = scheduling
 
   const availability = !scheduling.retakeBlock && reservationWindowStatus === 'OPEN'
     ? await getAllFacilitiesAvailability(

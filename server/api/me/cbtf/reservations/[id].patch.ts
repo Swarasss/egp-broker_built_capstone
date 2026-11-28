@@ -142,7 +142,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       }
 
       currentStep = 'Verifying Student Availability Window'
-      const scheduling = await getCbtfSchedulingState(session.user.id, existing.assignment, tx, existing)
+      const scheduling = await getCbtfSchedulingState(
+        session.user.id, existing.assignment, tx, existing, new Date(), durationMinutes
+      )
       assertCbtfSchedulingOpen(scheduling)
       const studentWindow = scheduling.examWindow
 

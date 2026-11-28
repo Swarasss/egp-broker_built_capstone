@@ -28,6 +28,7 @@ import type {
   CbtfFacilityAvailabilityStatus,
   CbtfReservationWindowStatus,
   CbtfReservation,
+  CbtfReservationStatus,
   CbtfRecommendedDay,
   CbtfHalfDayBlock,
   CbtfHourlySlotChoice,
@@ -575,6 +576,33 @@ export function getCbtfReservationWindowStatus(
   return now < start ? 'NOT_YET_OPEN' : 'OPEN'
 }
 
+/** Bounds on when a normal missed exam can be rebooked, before facility checks. */
+export function getCbtfMissedRecoveryWindow(
+  assignment: {
+    scheduleWindowStart: Date | null
+    scheduleWindowEnd: Date | null
+    availableFrom: Date | null
+    acceptUntil: Date | null
+  },
+  durationMinutes: number
+) {
+  const { scheduleWindowStart, scheduleWindowEnd, availableFrom, acceptUntil } = assignment
+  if (
+    !scheduleWindowStart ||
+    !scheduleWindowEnd ||
+    scheduleWindowStart >= scheduleWindowEnd ||
+    !availableFrom ||
+    !acceptUntil
+  ) return null
+
+  const firstStart = Math.ceil(+availableFrom / cbtfStartStepMs) * cbtfStartStepMs
+  const lastStart =
+    Math.floor((+acceptUntil - durationMinutes * 60_000) / cbtfStartStepMs) * cbtfStartStepMs
+  const end = Math.min(+scheduleWindowEnd, lastStart)
+  if (firstStart > lastStart || +scheduleWindowStart > end) return null
+  return { start: scheduleWindowStart, end: new Date(end) }
+}
+
 const cbtfRetakeMessages = {
   RETAKE_PASS_REQUIRED: 'You have already completed this exam. A retake pass is required to schedule another attempt.',
   RETAKE_WINDOW_EXPIRED: 'There is no usable retake window for this booking.'
@@ -588,6 +616,7 @@ interface CbtfSchedulingState {
   actionStatus: CbtfReservationWindowStatus
   retakeBlock: RetakeBlock | null
   reusableRetakeId: string | null
+  normalMissedId?: string
 }
 
 export function assertCbtfSchedulingOpen(state: CbtfSchedulingState) {
@@ -618,8 +647,9 @@ export async function getCbtfSchedulingState(
     acceptUntil: Date | null
   },
   tx: Prisma.TransactionClient = prisma,
-  reservation?: { id: string; retakeRedemptionId: string | null } | null,
-  now = new Date()
+  reservation?: { id: string; retakeRedemptionId: string | null; status: CbtfReservationStatus } | null,
+  now = new Date(),
+  durationMinutes?: number
 ): Promise<CbtfSchedulingState> {
   const pinnedRedemptionId = reservation?.retakeRedemptionId
   const receipts = await tx.passRedemption.findMany({
@@ -632,9 +662,46 @@ export async function getCbtfSchedulingState(
     include: { cbtfRetake: { select: cbtfRetakeClaimSelect } }
   })
 
+  const findCompleted = () => tx.cbtfReservation.findFirst({
+    where: {
+      userId,
+      assignmentId: assignment.id,
+      status: { in: ['CHECKED_OUT', 'COMPLETED'] }
+    },
+    select: { id: true }
+  })
+  let completed: Awaited<ReturnType<typeof findCompleted>> | undefined
+  let normalMissedId: string | undefined
+
   for (const receipt of receipts) {
     const window = getOpenCbtfRetakeWindow(receipt, now, reservation?.id)
     if (!window) continue
+
+    const recovery = !pinnedRedemptionId && durationMinutes !== undefined
+      ? getCbtfMissedRecoveryWindow(assignment, durationMinutes)
+      : null
+    // An unclaimed pass is only needed if this missed booking cannot use the normal windows.
+    if (recovery && recovery.start <= now && now <= recovery.end) {
+      const missed = reservation
+        ? (reservation.status === 'MISSED' ? reservation : null)
+        : await tx.cbtfReservation.findFirst({
+            where: {
+              userId,
+              assignmentId: assignment.id,
+              status: 'MISSED',
+              retakeRedemptionId: null
+            },
+            orderBy: { updatedAt: 'desc' },
+            select: { id: true }
+          })
+      if (missed) {
+        completed = await findCompleted()
+        if (!completed) {
+          normalMissedId = missed.id
+          break
+        }
+      }
+    }
     return {
       examWindow: { ...window, isPassWindow: true, redemptionId: receipt.id },
       actionWindow: { scheduleWindowStart: window.start, scheduleWindowEnd: window.end },
@@ -644,14 +711,7 @@ export async function getCbtfSchedulingState(
     }
   }
 
-  const completed = await tx.cbtfReservation.findFirst({
-    where: {
-      userId,
-      assignmentId: assignment.id,
-      status: { in: ['CHECKED_OUT', 'COMPLETED'] }
-    },
-    select: { id: true }
-  })
+  if (completed === undefined) completed = await findCompleted()
   const actionStatus = getCbtfReservationWindowStatus(assignment, now)
   let retakeBlock: RetakeBlock | null = null
   if (pinnedRedemptionId || (receipts.length && (completed || actionStatus !== 'OPEN'))) {
@@ -674,7 +734,8 @@ export async function getCbtfSchedulingState(
     actionWindow: { scheduleWindowStart, scheduleWindowEnd },
     actionStatus,
     retakeBlock,
-    reusableRetakeId: null
+    reusableRetakeId: null,
+    normalMissedId
   }
 }
 

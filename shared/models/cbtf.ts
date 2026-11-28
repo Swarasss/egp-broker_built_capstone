@@ -84,6 +84,7 @@ export interface CbtfReservationDto {
   /** True when this reservation's seat is currently out of service (needs staff attention). */
   seatOutOfService?: boolean
   isRetake?: boolean
+  missedRecoveryWindow?: { start: string; end: string }
   startTime: string
   endTime: string
   status: CbtfReservationStatus

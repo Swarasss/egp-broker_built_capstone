@@ -480,7 +480,11 @@ export const useStudentDashboard = (isPreview = false) => {
 
         const retake = getCbtfRetake(row.original.id)
         const canResume = res && getCbtfRetake(row.original.id, res.id)
-        if (retake && res?.status !== 'SCHEDULED' && res?.status !== 'CHECKED_IN') {
+        const recovery = res?.status === 'MISSED' ? res.missedRecoveryWindow : undefined
+        const canRecover = recovery &&
+          +new Date(recovery.start) <= retakeClock.value &&
+          retakeClock.value <= +new Date(recovery.end)
+        if (retake && !canRecover && res?.status !== 'SCHEDULED' && res?.status !== 'CHECKED_IN') {
           return h('div', { class: 'space-y-1' }, [
             h(
               'p',
@@ -569,6 +573,7 @@ export const useStudentDashboard = (isPreview = false) => {
         }
 
         if (res.status === 'MISSED') {
+          if (!canRecover) return h('span', { class: 'text-xs text-neutral-500' }, 'Missed')
           return h(
             'button',
             {

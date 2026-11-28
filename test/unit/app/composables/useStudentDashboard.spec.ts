@@ -6,10 +6,16 @@ import { useStudentDashboard } from '~/composables/features/useStudentDashboard'
 const redemptions = ref<{ data: unknown[] }>({ data: [] })
 const pools = ref<{ data: unknown[] }>({ data: [] })
 const refresh = vi.fn()
+const reservation = ref<{
+  id: string
+  status: string
+  isRetake?: boolean
+  missedRecoveryWindow?: { start: string; end: string }
+}>({ id: 'completed', status: 'COMPLETED' })
 
 vi.mock('~/composables/features/useCbtfStudent', () => ({
   useCbtfStudent: () => ({
-    getReservationForAssignment: () => ({ id: 'completed', status: 'COMPLETED' }),
+    getReservationForAssignment: () => reservation.value,
     refreshReservations: vi.fn()
   })
 }))
@@ -23,6 +29,8 @@ describe('student dashboard CBTF retake action', () => {
   }))
 
   beforeEach(() => {
+    reservation.value = { id: 'completed', status: 'COMPLETED' }
+    redemptions.value = { data: [] }
     vi.useFakeTimers()
     vi.setSystemTime(new Date('2030-01-08T09:00:00Z'))
     vi.stubGlobal('h', h)
@@ -73,6 +81,54 @@ describe('student dashboard CBTF retake action', () => {
     expect(wrapper.get('#exam-a').find('button').exists()).toBe(false)
     wrapper.unmount()
   })
+  it('offers normal missed recovery until its deadline, then uses only a valid retake action', async () => {
+    reservation.value = {
+      id: 'missed', status: 'MISSED',
+      missedRecoveryWindow: { start: '2030-01-08T08:00:00Z', end: '2030-01-08T09:00:00Z' }
+    }
+    const receipt = {
+      assignmentId: 'exam-a',
+      cbtfRetakeWindow: { start: '2030-01-08T08:00:00Z', end: '2030-01-08T10:00:00Z', reservationId: null }
+    }
+    redemptions.value = { data: [receipt] }
+
+    const wrapper = mount(defineComponent({
+      setup() {
+        const dashboard = useStudentDashboard()
+        const column = dashboard.assignmentColumns.find((item) => item.accessorKey === 'cbtfSlot')!
+        return () => h('div', [
+          column.cell!({ row: { original: assignments[0] } }),
+          h('p', { id: 'selected-reservation' }, dashboard.selectedCbtfReservation.value?.id)
+        ])
+      }
+    }))
+
+    expect(wrapper.get('button').text()).toBe('Missed (Reschedule)')
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.get('#selected-reservation').text()).toBe('missed')
+
+    vi.advanceTimersByTime(1000)
+    await nextTick()
+    expect(wrapper.get('button').text()).toBe('Schedule Retake')
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.get('#selected-reservation').text()).toBe('')
+
+    redemptions.value = { data: [] }
+    await nextTick()
+    expect(wrapper.find('button').exists()).toBe(false)
+    expect(wrapper.text()).toContain('Missed')
+
+    reservation.value = { id: 'missed-retake', status: 'MISSED', isRetake: true }
+    redemptions.value = {
+      data: [{ ...receipt, cbtfRetakeWindow: { ...receipt.cbtfRetakeWindow, reservationId: 'missed-retake' } }]
+    }
+    await nextTick()
+    expect(wrapper.get('button').text()).toBe('Reschedule Retake')
+    await wrapper.get('button').trigger('click')
+    expect(wrapper.get('#selected-reservation').text()).toBe('missed-retake')
+    wrapper.unmount()
+  })
+
   it('disables redemption while an active receipt blocks it and enables another after consumption', async () => {
     const pass = { id: 'retry', name: 'Exam Retry', hoursPerPass: 24 }
     const assignment = { ...assignments[0], eligiblePassTypes: [pass] }

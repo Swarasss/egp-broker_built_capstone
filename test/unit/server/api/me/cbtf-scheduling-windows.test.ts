@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import availabilityGet from '../../../../../server/api/me/cbtf/availability.get'
+import reservationsGet from '../../../../../server/api/me/cbtf/reservations.get'
 import reservationsPost from '../../../../../server/api/me/cbtf/reservations.post'
 import reservationPatch from '../../../../../server/api/me/cbtf/reservations/[id].patch'
 import reservationDelete from '../../../../../server/api/me/cbtf/reservations/[id].delete'
@@ -422,7 +423,9 @@ describe('CBTF exam dates versus reservation action dates', () => {
           row.userId === where.userId &&
           (!where.assignmentId || row.assignmentId === where.assignmentId) &&
           (!where.id || (typeof where.id === 'string' ? row.id === where.id : row.id !== where.id.not)) &&
-          where.status.in.includes(row.status) &&
+          (where.status.in ? where.status.in.includes(row.status) : where.status === row.status) &&
+          (!where.startTime || row.startTime < where.startTime.lt) &&
+          (!where.endTime || row.endTime > where.endTime.gt) &&
           (where.retakeRedemptionId === undefined || where.retakeRedemptionId === row.retakeRedemptionId)
         ) ?? null
       )
@@ -453,6 +456,149 @@ describe('CBTF exam dates versus reservation action dates', () => {
 
     beforeEach(() => {
       vi.setSystemTime(new Date(now))
+    })
+
+    describe.each([['POST', reservationsPost], ['PATCH', reservationPatch]] as const)(
+      'Normal missed recovery via %s', (method, handler) => {
+        const missedAssignment = {
+          ...assignment,
+          availableFrom: new Date('2030-01-07T08:00:00Z'),
+          scheduleWindowEnd: new Date('2030-01-07T11:00:00Z')
+        }
+        const missed = {
+          id: 'reservation', assignment: missedAssignment, assignmentId, userId: 'student',
+          status: 'MISSED', retakeRedemptionId: null, facilityId: 'a', seatNumber: 1,
+          startTime: new Date('2030-01-07T08:30:00Z'), endTime: new Date('2030-01-07T10:00:00Z')
+        }
+        const pass = receipt('grant', {
+          availableFrom: new Date('2030-01-07T09:00:00Z'),
+          acceptUntil: new Date('2030-01-07T15:00:00Z')
+        })
+        const readForMethod = () => read(method === 'PATCH' ? missed.id : undefined)
+
+        beforeEach(() => {
+          vi.setSystemTime(new Date('2030-01-07T10:01:00Z'))
+          vi.mocked(prisma.assignment.findUnique).mockResolvedValue(missedAssignment as any)
+        })
+
+        it.each([false, true])('reuses the normal missed row through placement (redeemed pass: %s)', async (hasPass) => {
+          const { rows } = useRetakeStore(hasPass ? [pass] : [], [missed])
+          mockFacilities(facilities[1]!)
+          const availability = await readForMethod()
+          expect(availability.studentWindow.isPassWindow).toBe(false)
+          expect(availability.availabilityStatus).toBe('AVAILABLE')
+          const response = await handler(event())
+          expect(response.data).toMatchObject({
+            id: missed.id, facilityId: 'b', seatNumber: expect.any(Number), status: 'SCHEDULED',
+            startTime: '2030-01-07T10:30:00.000Z', endTime: '2030-01-07T12:00:00.000Z'
+          })
+          expect(rows).toHaveLength(1)
+          expect(rows[0].retakeRedemptionId).toBeNull()
+          expect(prisma.cbtfReservation.create).not.toHaveBeenCalled()
+        })
+
+        it('rejects recovery after the action window closes, even with a remaining exam start', async () => {
+          const earlyClose = { ...missedAssignment, scheduleWindowEnd: new Date('2030-01-07T10:00:00Z') }
+          vi.mocked(prisma.assignment.findUnique).mockResolvedValue(earlyClose as any)
+          useRetakeStore([], [{ ...missed, assignment: earlyClose }])
+          expect((await readForMethod()).availabilityStatus).toBe('RESERVATION_CLOSED')
+          await expect(handler(event())).rejects.toMatchObject({ statusCode: 403 })
+          expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+        })
+
+        it('rejects recovery when SSD duration cannot fit the remaining exam window', async () => {
+          useRetakeStore([], [missed])
+          vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+            timeMultiplier: 1.5, requiredSeatProperties: []
+          } as any)
+          expect((await readForMethod()).availabilityStatus).toBe('NO_FUTURE_STARTS')
+          await expect(handler(event())).rejects.toMatchObject({ statusCode: 400 })
+          expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+        })
+
+        it('uses a valid redeemed pass when the normal exam window cannot fit another start', async () => {
+          vi.setSystemTime(new Date('2030-01-07T10:31:00Z'))
+          const { rows } = useRetakeStore([pass], [missed])
+          expect((await readForMethod()).studentWindow.isPassWindow).toBe(true)
+          const response = await handler(event('2030-01-07T11:00:00Z'))
+          expect(response.data).toMatchObject({ id: missed.id, status: 'SCHEDULED' })
+          expect(rows[0].retakeRedemptionId).toBe('grant')
+        })
+
+        it('requires a pass when a completed attempt also exists, even with normal time left', async () => {
+          const { rows } = useRetakeStore([pass], [missed, original])
+          expect((await readForMethod()).studentWindow.isPassWindow).toBe(true)
+          await expect(handler(event())).resolves.toMatchObject({
+            data: { id: missed.id, status: 'SCHEDULED' }
+          })
+          expect(rows.map(({ status, retakeRedemptionId }) => [status, retakeRedemptionId])).toEqual([
+            ['SCHEDULED', 'grant'], ['CHECKED_OUT', null]
+          ])
+        })
+
+        it.each([
+          ['conflict', 'STUDENT_CONFLICT'],
+          ['capacity', 'NO_AVAILABLE_SEATS'],
+          ['arrival throttle', 'ARRIVAL_LIMIT_REACHED']
+        ])('rejects a replacement blocked by %s', async (reason, availabilityStatus) => {
+          // Only the 10:30 start can still fit the full exam.
+          vi.setSystemTime(new Date('2030-01-07T10:26:00Z'))
+          const starts = [
+            new Date('2030-01-07T10:30:00Z'),
+            new Date('2030-01-07T10:25:00Z')
+          ]
+          const occupied = starts.map((startTime, index) => ({
+            facilityId: 'a', seatNumber: index + 1, startTime, endTime: assignment.acceptUntil
+          }))
+          useRetakeStore([], reason === 'conflict' ? [missed, {
+            ...missed, id: 'other', assignmentId: 'other-assignment', status: 'SCHEDULED',
+            ...occupied[0]
+          }] : [missed])
+          if (reason === 'capacity') {
+            mockFacilities({ ...facilities[0]!, totalSeats: 2, seatAllocationOrder: [1, 2] })
+            // Occupy the other seat with a different arrival time as well.
+            vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(
+              [{ ...occupied[0], startTime: new Date('2030-01-07T10:20:00Z') }, occupied[1]] as any
+            )
+          } else if (reason === 'conflict') {
+            vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(
+              [{ ...occupied[0], userId: 'student' }] as any
+            )
+          } else {
+            mockFacilities(facilities[0]!)
+            vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(
+              [occupied[0], { ...occupied[0], seatNumber: 2 }] as any
+            )
+          }
+          expect((await readForMethod()).availabilityStatus).toBe(availabilityStatus)
+          await expect(handler(event())).rejects.toMatchObject({
+            statusCode: 409,
+            ...(reason === 'conflict' ? { statusMessage: expect.stringContaining('overlapping') } : {})
+          })
+          expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+        })
+      }
+    )
+
+    it('reports the normal missed recovery deadline using the SSD-adjusted five-minute grid', async () => {
+      const missed = {
+        ...original, status: 'MISSED',
+        assignment: {
+          ...assignment,
+          scheduleWindowEnd: new Date('2030-01-07T11:00:00Z'),
+          acceptUntil: new Date('2030-01-07T12:03:00Z')
+        },
+        startTime: new Date('2030-01-07T09:00:00Z'),
+        endTime: new Date('2030-01-07T10:30:00Z')
+      }
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([missed] as any)
+      vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+        timeMultiplier: 1.25, requiredSeatProperties: []
+      } as any)
+      expect((await reservationsGet(event())).data[0]?.missedRecoveryWindow).toEqual({
+        start: '2030-01-01T00:00:00.000Z',
+        end: '2030-01-07T10:05:00.000Z'
+      })
     })
 
     it('offers no retake without a matching non-extension grant', async () => {

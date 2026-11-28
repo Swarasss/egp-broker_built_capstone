@@ -429,6 +429,21 @@ describe('Admin CBTF Reservations Endpoints', () => {
       expect(deleteCbtfReservationCanvasOverride).toHaveBeenCalledWith('res-1')
     })
 
+    it('lets an admin mark an elapsed scheduled reservation as missed', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        ...existingReservation, startTime: new Date(0), endTime: new Date(60 * 60_000)
+      } as any)
+
+      const result = await reservationPatch(editEvent({ status: 'MISSED' }))
+
+      expect(result.data).toMatchObject({ id: 'res-1', status: 'MISSED' })
+      expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(expect.objectContaining({
+        where: expect.objectContaining({ id: 'res-1', status: 'SCHEDULED' }),
+        data: { status: 'MISSED' }
+      }))
+      expect(prisma.cbtfFacility.findMany).not.toHaveBeenCalled()
+    })
+
     it('allows checkout without revalidating placement', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
         ...existingReservation,

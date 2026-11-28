@@ -169,7 +169,9 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       }
 
       currentStep = 'Verifying Student Availability Window'
-      const scheduling = await getCbtfSchedulingState(session.user.id, assignment, tx)
+      const scheduling = await getCbtfSchedulingState(
+        session.user.id, assignment, tx, null, new Date(), durationMinutes
+      )
       assertCbtfSchedulingOpen(scheduling)
       const studentWindow = scheduling.examWindow
 
@@ -181,19 +183,25 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
       }
 
       // Check if there is an uncompleted reservation (CANCELLED or MISSED) that can be reused
+      const reusableId = scheduling.reusableRetakeId ?? scheduling.normalMissedId
       const reusableReservation = await tx.cbtfReservation.findFirst({
         where: {
           userId: session.user.id,
           assignmentId,
           status: { in: ['CANCELLED', 'MISSED'] },
           retakeRedemptionId: scheduling.reusableRetakeId ? studentWindow.redemptionId : null,
-          ...(scheduling.reusableRetakeId ? { id: scheduling.reusableRetakeId } : {})
+          ...(reusableId ? { id: reusableId } : {})
         },
         orderBy: { updatedAt: 'desc' }
       })
 
-      if (scheduling.reusableRetakeId && !reusableReservation) {
-        throw createError({ statusCode: 409, statusMessage: 'The retake reservation changed. Refresh and try again.' })
+      if (reusableId && !reusableReservation) {
+        throw createError({
+          statusCode: 409,
+          statusMessage: scheduling.reusableRetakeId
+            ? 'The retake reservation changed. Refresh and try again.'
+            : 'The missed reservation changed. Refresh and try again.'
+        })
       }
 
       currentStep = 'Selecting Testing Facility and Workstation'
