@@ -1,6 +1,7 @@
 import { defineEventHandler, getRouterParam, readBody, createError } from 'h3'
 import prisma from '@@/server/utils/db'
-import { toCbtfReservationDto } from '@@/server/utils/cbtf'
+import { toCbtfReservationDto, getStudentAccommodation } from '@@/server/utils/cbtf'
+import { chooseCbtfPlacement, lockCbtfFacilities } from '@@/server/utils/cbtf-placement'
 import {
   syncCbtfReservationCanvasOverride,
   deleteCbtfReservationCanvasOverride
@@ -18,67 +19,150 @@ export default defineEventHandler(async (event): Promise<ApiResponse<CbtfReserva
     throw createError({ statusCode: 403, statusMessage: 'Forbidden' })
   }
 
+  const adminUserId = session.user.id
+
   const id = getRouterParam(event, 'id')
   if (!id) {
     throw createError({ statusCode: 400, statusMessage: 'ID is required' })
   }
 
-  const existing = await prisma.cbtfReservation.findUnique({
-    where: { id }
-  })
-  if (!existing) {
-    throw createError({ statusCode: 404, statusMessage: 'Reservation not found' })
-  }
-
   const rawBody = await readBody(event)
   const body = cbtfAdminUpdateReservationSchema.parse(rawBody)
 
-  const data: Record<string, any> = {}
+  const updated = await prisma.$transaction(
+    async (tx) => {
+      await lockCbtfFacilities(tx)
 
-  if (body.status) {
-    data.status = body.status
-    if (body.status === 'CHECKED_OUT' && !existing.checkedOutAt) {
-      data.checkedOutAt = new Date()
-      data.checkedOutByUserId = session.user.id
-    } else if (body.status === 'CHECKED_IN' && !existing.checkedInAt) {
-      data.checkedInAt = new Date()
-      data.checkedInByUserId = session.user.id
-    }
-  }
+      const existing = await tx.cbtfReservation.findUnique({
+        where: { id }
+      })
 
-  if (body.seatNumber !== undefined) {
-    data.seatNumber = body.seatNumber
-  }
+      if (!existing) {
+        throw createError({
+          statusCode: 404,
+          statusMessage: 'Reservation not found'
+        })
+      }
 
-  if (body.startTime) {
-    data.startTime = new Date(body.startTime)
-  }
+      const startTime = body.startTime ? new Date(body.startTime) : existing.startTime
 
-  if (body.endTime) {
-    data.endTime = new Date(body.endTime)
-  }
+      const endTime = body.endTime ? new Date(body.endTime) : existing.endTime
 
-  const updated = await prisma.cbtfReservation.update({
-    where: { id },
-    data,
-    include: {
-      assignment: { select: { title: true } },
-      user: {
-        select: {
-          firstName: true,
-          lastName: true,
-          email: true,
-          studentId: true,
-          avatarUrl: true
+      const seatNumber = body.seatNumber ?? existing.seatNumber
+      const status = body.status ?? existing.status
+
+      const isActive = status === 'SCHEDULED' || status === 'CHECKED_IN'
+
+      const wasActive = existing.status === 'SCHEDULED' || existing.status === 'CHECKED_IN'
+
+      const placementChanged =
+        seatNumber !== existing.seatNumber ||
+        +startTime !== +existing.startTime ||
+        +endTime !== +existing.endTime
+
+      if ((placementChanged || (isActive && !wasActive)) && endTime <= startTime) {
+        throw createError({
+          statusCode: 400,
+          statusMessage: 'End time must be after start time'
+        })
+      }
+
+      if (isActive && (placementChanged || !wasActive)) {
+        const overlappingReservation = await tx.cbtfReservation.findFirst({
+          where: {
+            userId: existing.userId,
+            id: { not: existing.id },
+            status: { in: ['SCHEDULED', 'CHECKED_IN'] },
+            startTime: { lt: endTime },
+            endTime: { gt: startTime }
+          }
+        })
+
+        if (overlappingReservation) {
+          throw createError({
+            statusCode: 409,
+            statusMessage: 'Student has an overlapping reservation'
+          })
+        }
+
+        const accommodation = await getStudentAccommodation(existing.userId, tx)
+
+        await chooseCbtfPlacement(
+          tx,
+          [existing.facilityId],
+          startTime,
+          endTime,
+          accommodation.requiredSeatProperties,
+          existing.id,
+          seatNumber
+        )
+      }
+
+      const data: Record<string, any> = {}
+
+      if (body.status) {
+        data.status = body.status
+
+        if (body.status === 'CHECKED_OUT' && !existing.checkedOutAt) {
+          data.checkedOutAt = new Date()
+          data.checkedOutByUserId = adminUserId
+        } else if (body.status === 'CHECKED_IN' && !existing.checkedInAt) {
+          data.checkedInAt = new Date()
+          data.checkedInByUserId = adminUserId
         }
       }
-    }
-  })
 
-  // Synchronize changes to Canvas assignment overrides where possible
-  if (data.status === 'CANCELLED') {
+      if (body.seatNumber !== undefined) {
+        data.seatNumber = body.seatNumber
+      }
+
+      if (body.startTime) {
+        data.startTime = startTime
+      }
+
+      if (body.endTime) {
+        data.endTime = endTime
+      }
+
+      try {
+        return await tx.cbtfReservation.update({
+          where: {
+            id,
+            status: existing.status,
+            facilityId: existing.facilityId,
+            seatNumber: existing.seatNumber
+          },
+          data,
+          include: {
+            assignment: { select: { title: true } },
+            user: {
+              select: {
+                firstName: true,
+                lastName: true,
+                email: true,
+                studentId: true,
+                avatarUrl: true
+              }
+            }
+          }
+        })
+      } catch (error) {
+        if ((error as { code?: string })?.code === 'P2025') {
+          throw createError({
+            statusCode: 409,
+            statusMessage: 'Reservation changed. Please refresh and try again.'
+          })
+        }
+        throw error
+      }
+    },
+    { isolationLevel: 'ReadCommitted' }
+  )
+
+  // Synchronize Canvas only after the transaction succeeds.
+  if (body.status === 'CANCELLED') {
     await deleteCbtfReservationCanvasOverride(id)
-  } else if (data.startTime || data.endTime || data.status === 'SCHEDULED') {
+  } else if (body.startTime || body.endTime || body.status === 'SCHEDULED') {
     await syncCbtfReservationCanvasOverride(id)
   }
 

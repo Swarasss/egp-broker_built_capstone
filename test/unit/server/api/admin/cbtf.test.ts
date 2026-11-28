@@ -18,8 +18,13 @@ import prisma from '@@/server/utils/db'
 
 vi.mock('@@/server/utils/db', () => ({
   default: {
-    $transaction: vi.fn((promises: any[]) => Promise.all(promises)),
-    $queryRaw: vi.fn(),
+    $transaction: vi.fn(async (input: any) => {
+      if (typeof input === 'function') {
+        return input(prisma)
+      }
+      return Promise.all(input)
+    }),
+    $queryRaw: vi.fn().mockResolvedValue([]),
     cbtfFacility: {
       findFirst: vi.fn(),
       findMany: vi.fn(),
@@ -110,7 +115,10 @@ describe('API: Admin CBTF Endpoints', () => {
         operatingHours: [],
         scheduleExceptions: []
       }
-      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([mockFacility, { ...mockFacility, id: 'fac-2' }] as any)
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+        mockFacility,
+        { ...mockFacility, id: 'fac-2' }
+      ] as any)
 
       const res = await facilityGet(event)
       expect(res.statusCode).toBe(200)
@@ -157,7 +165,8 @@ describe('API: Admin CBTF Endpoints', () => {
     })
 
     it.each([facilityGet, facilityPost, facilityPatch, facilityDelete])(
-      'requires an authenticated administrator', async (handler) => {
+      'requires an authenticated administrator',
+      async (handler) => {
         await expect(handler(mockEvent(null))).rejects.toMatchObject({ statusCode: 401 })
         await expect(handler(mockEvent('USER'))).rejects.toMatchObject({ statusCode: 403 })
       }
@@ -167,33 +176,38 @@ describe('API: Admin CBTF Endpoints', () => {
       vi.mocked(prisma.cbtfFacility.create).mockResolvedValue({ id: 'fac-new' } as any)
       const result = await facilityPost(mockEvent('ADMIN', { name: 'Room Two', totalSeats: 3 }))
       expect(result).toMatchObject({ statusCode: 201, data: { id: 'fac-new' } })
-      expect(prisma.cbtfFacility.create).toHaveBeenCalledWith(expect.objectContaining({
-        data: expect.objectContaining({
-          name: 'Room Two',
-          totalSeats: 3,
-          seatAllocationOrder: [1, 2, 3],
-          spareSeatCount: 1,
-          spareSeatNumbers: [3]
+      expect(prisma.cbtfFacility.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            name: 'Room Two',
+            totalSeats: 3,
+            seatAllocationOrder: [1, 2, 3],
+            spareSeatCount: 1,
+            spareSeatNumbers: [3]
+          })
         })
-      }))
+      )
     })
 
     it('rejects invalid facility creation', async () => {
-      await expect(facilityPost(mockEvent('ADMIN', { name: '', totalSeats: 0 })))
-        .rejects.toMatchObject({ statusCode: 400 })
+      await expect(
+        facilityPost(mockEvent('ADMIN', { name: '', totalSeats: 0 }))
+      ).rejects.toMatchObject({ statusCode: 400 })
       expect(prisma.cbtfFacility.create).not.toHaveBeenCalled()
     })
 
     it('requires an explicit facility ID for updates', async () => {
-      await expect(facilityPatch(mockEvent('ADMIN', { name: 'Room' })))
-        .rejects.toMatchObject({ statusCode: 400 })
+      await expect(facilityPatch(mockEvent('ADMIN', { name: 'Room' }))).rejects.toMatchObject({
+        statusCode: 400
+      })
       expect(prisma.cbtfFacility.update).not.toHaveBeenCalled()
     })
 
     it('returns 404 for an unknown update target', async () => {
       vi.mocked(prisma.cbtfFacility.findUnique).mockResolvedValue(null)
-      await expect(facilityPatch(mockEvent('ADMIN', { facilityId: 'missing', name: 'Room' })))
-        .rejects.toMatchObject({ statusCode: 404 })
+      await expect(
+        facilityPatch(mockEvent('ADMIN', { facilityId: 'missing', name: 'Room' }))
+      ).rejects.toMatchObject({ statusCode: 404 })
     })
 
     it('recomputes spare seats when capacity changes', async () => {
@@ -215,7 +229,9 @@ describe('API: Admin CBTF Endpoints', () => {
         async ({ data }: any) => ({ id: 'fac-1', ...data }) as any
       )
 
-      const result = await facilityPatch(mockEvent('ADMIN', { facilityId: 'fac-1', totalSeats: 17 }))
+      const result = await facilityPatch(
+        mockEvent('ADMIN', { facilityId: 'fac-1', totalSeats: 17 })
+      )
 
       expect(result.statusCode).toBe(200)
       expect(prisma.cbtfFacility.update).toHaveBeenCalledWith(
@@ -230,7 +246,9 @@ describe('API: Admin CBTF Endpoints', () => {
     })
 
     const prepareDeletion = (exists = true, reservations = 0, shifts = 0) => {
-      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) => callback(prisma))
+      vi.mocked(prisma.$transaction).mockImplementationOnce(async (callback: any) =>
+        callback(prisma)
+      )
       vi.mocked(prisma.$queryRaw).mockResolvedValue(exists ? [{ id: 'fac-2' }] : [])
       vi.mocked(prisma.cbtfReservation.count).mockResolvedValue(reservations)
       vi.mocked(prisma.cbtfProctorShift.count).mockResolvedValue(shifts)
@@ -243,17 +261,22 @@ describe('API: Admin CBTF Endpoints', () => {
       expect(prisma.cbtfFacility.delete).toHaveBeenCalledWith({ where: { id: 'fac-2' } })
     })
 
-    it.each([[1, 0], [0, 1]])('blocks deletion with reservations=%i shifts=%i', async (reservations, shifts) => {
+    it.each([
+      [1, 0],
+      [0, 1]
+    ])('blocks deletion with reservations=%i shifts=%i', async (reservations, shifts) => {
       prepareDeletion(true, reservations, shifts)
-      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'fac-2' })))
-        .rejects.toMatchObject({ statusCode: 409 })
+      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'fac-2' }))).rejects.toMatchObject({
+        statusCode: 409
+      })
       expect(prisma.cbtfFacility.delete).not.toHaveBeenCalled()
     })
 
     it('returns 404 for an unknown delete target', async () => {
       prepareDeletion(false)
-      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'missing' })))
-        .rejects.toMatchObject({ statusCode: 404 })
+      await expect(facilityDelete(mockEvent('ADMIN', {}, { id: 'missing' }))).rejects.toMatchObject(
+        { statusCode: 404 }
+      )
       expect(prisma.cbtfFacility.delete).not.toHaveBeenCalled()
     })
   })

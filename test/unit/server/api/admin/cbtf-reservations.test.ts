@@ -8,17 +8,30 @@ import {
   deleteCbtfReservationCanvasOverride
 } from '@@/server/utils/cbtf-canvas'
 
-vi.mock('@@/server/utils/db', () => ({
-  default: {
+vi.mock('@@/server/utils/db', () => {
+  const db = {
+    $queryRaw: vi.fn(),
+    $transaction: vi.fn(),
     cbtfReservation: {
       findMany: vi.fn(),
+      findFirst: vi.fn(),
       findUnique: vi.fn(),
       count: vi.fn(),
       update: vi.fn(),
       delete: vi.fn()
+    },
+    cbtfFacility: {
+      findMany: vi.fn()
+    },
+    cbtfStudentAccommodation: {
+      findUnique: vi.fn()
     }
   }
-}))
+
+  db.$transaction.mockImplementation(async (callback) => callback(db))
+
+  return { default: db }
+})
 
 vi.mock('@@/server/utils/cbtf-canvas', () => ({
   syncCbtfReservationCanvasOverride: vi
@@ -195,46 +208,93 @@ describe('Admin CBTF Reservations Endpoints', () => {
   })
 
   describe('PATCH /api/admin/cbtf/reservations/[id]', () => {
-    it('throws 404 if reservation does not exist', async () => {
-      const event = mockEvent('ADMIN', { status: 'CHECKED_IN' }, { id: 'missing-id' })
-      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue(null)
+    const existingReservation = {
+      id: 'res-1',
+      facilityId: 'fac-1',
+      userId: 'usr-1',
+      seatNumber: 10,
+      startTime: new Date('2026-10-10T13:00:00.000Z'),
+      endTime: new Date('2026-10-10T14:00:00.000Z'),
+      status: 'SCHEDULED'
+    }
 
-      await expect(reservationPatch(event)).rejects.toThrow('Reservation not found')
+    const facility = {
+      id: 'fac-1',
+      name: 'Testing Center',
+      totalSeats: 48,
+      timezone: 'UTC',
+      spareSeatCount: 4,
+      operatingHours: [
+        {
+          dayOfWeek: 6,
+          openTime: '08:00',
+          closeTime: '18:00'
+        }
+      ],
+      scheduleExceptions: [],
+      seats: [],
+      seatStatuses: []
+    }
+
+    const editEvent = (body: Record<string, unknown>) => mockEvent('ADMIN', body, { id: 'res-1' })
+
+    beforeEach(() => {
+      vi.mocked(prisma.$queryRaw).mockResolvedValue([{ id: 'fac-1' }])
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue(existingReservation as any)
+      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue(null)
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([])
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([facility] as any)
+      vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue(null)
+
+      vi.mocked(prisma.cbtfReservation.update).mockImplementation((async (args: any) => ({
+        ...existingReservation,
+        ...args.data,
+        assignment: { title: 'Exam 1' },
+        user: {
+          firstName: 'Alice',
+          lastName: 'Smith',
+          email: 'alice@vt.edu'
+        }
+      })) as any)
     })
 
-    it('updates time slot, seat, and invokes Canvas sync', async () => {
-      const event = mockEvent(
-        'ADMIN',
-        {
+    const expectRejected = async (body: Record<string, unknown>, statusCode = 409) => {
+      await expect(reservationPatch(editEvent(body))).rejects.toMatchObject({ statusCode })
+
+      expect(prisma.cbtfReservation.update).not.toHaveBeenCalled()
+
+      expect(syncCbtfReservationCanvasOverride).not.toHaveBeenCalled()
+
+      expect(deleteCbtfReservationCanvasOverride).not.toHaveBeenCalled()
+    }
+
+    it('throws 404 if reservation does not exist', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue(null)
+
+      await expect(reservationPatch(editEvent({ status: 'CHECKED_IN' }))).rejects.toMatchObject({
+        statusCode: 404
+      })
+    })
+
+    it('updates a valid time slot and seat and invokes Canvas sync', async () => {
+      const result = await reservationPatch(
+        editEvent({
           seatNumber: 15,
           startTime: '2026-10-10T14:00:00.000Z',
           endTime: '2026-10-10T15:00:00.000Z'
-        },
-        { id: 'res-1' }
+        })
       )
 
-      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1',
-        seatNumber: 10,
-        status: 'SCHEDULED'
-      } as any)
+      expect(result.statusCode).toBe(200)
 
-      vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
-        id: 'res-1',
-        seatNumber: 15,
-        startTime: new Date('2026-10-10T14:00:00.000Z'),
-        endTime: new Date('2026-10-10T15:00:00.000Z'),
-        status: 'SCHEDULED',
-        assignment: { title: 'Exam 1' },
-        user: { firstName: 'Alice', lastName: 'Smith', email: 'alice@vt.edu' }
-      } as any)
-
-      const res = await reservationPatch(event)
-
-      expect(res.statusCode).toBe(200)
       expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
         expect.objectContaining({
-          where: { id: 'res-1' },
+          where: {
+            id: 'res-1',
+            status: 'SCHEDULED',
+            facilityId: 'fac-1',
+            seatNumber: 10
+          },
           data: expect.objectContaining({
             seatNumber: 15,
             startTime: new Date('2026-10-10T14:00:00.000Z'),
@@ -242,28 +302,164 @@ describe('Admin CBTF Reservations Endpoints', () => {
           })
         })
       )
+
+      expect(prisma.$transaction).toHaveBeenCalledWith(expect.any(Function), {
+        isolationLevel: 'ReadCommitted'
+      })
+
+      expect(prisma.$queryRaw).toHaveBeenCalled()
+
       expect(syncCbtfReservationCanvasOverride).toHaveBeenCalledWith('res-1')
     })
 
-    it('removes Canvas override when status is updated to CANCELLED', async () => {
-      const event = mockEvent('ADMIN', { status: 'CANCELLED' }, { id: 'res-1' })
+    it('rejects a seat outside the facility capacity', async () => {
+      await expectRejected({ seatNumber: 49 })
+    })
 
+    it('rejects a spare seat during normal reservation editing', async () => {
+      await expectRejected({ seatNumber: 48 })
+    })
+
+    it('rejects an out-of-service seat', async () => {
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+        {
+          ...facility,
+          seatStatuses: [{ seatNumber: 15, isDisabled: true }]
+        }
+      ] as any)
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects an occupied seat instead of choosing another seat', async () => {
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue([
+        {
+          facilityId: 'fac-1',
+          seatNumber: 15,
+          startTime: new Date('2026-10-10T13:30:00.000Z'),
+          endTime: new Date('2026-10-10T14:30:00.000Z')
+        }
+      ] as any)
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects a seat that does not satisfy SSD requirements', async () => {
+      vi.mocked(prisma.cbtfStudentAccommodation.findUnique).mockResolvedValue({
+        isActive: true,
+        timeMultiplier: 1,
+        requiredSeatProperties: ['ACCESSIBLE']
+      } as any)
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects a reservation outside facility operating hours', async () => {
+      await expectRejected({
+        startTime: '2026-10-10T18:00:00.000Z',
+        endTime: '2026-10-10T19:00:00.000Z'
+      })
+    })
+
+    it('rejects a reservation on a closed exception date', async () => {
+      vi.mocked(prisma.cbtfFacility.findMany).mockResolvedValue([
+        {
+          ...facility,
+          scheduleExceptions: [
+            {
+              date: new Date('2026-10-10T00:00:00.000Z'),
+              isClosed: true,
+              openTime: null,
+              closeTime: null,
+              reason: 'Scheduled Closure'
+            }
+          ]
+        }
+      ] as any)
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects changes exceeding the arrival limit', async () => {
+      vi.mocked(prisma.cbtfReservation.findMany).mockResolvedValue(
+        Array.from({ length: 4 }, (_, index) => ({
+          facilityId: 'fac-1',
+          seatNumber: index + 1,
+          startTime: existingReservation.startTime,
+          endTime: existingReservation.endTime
+        })) as any
+      )
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects overlapping reservations for the same student', async () => {
+      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue({ id: 'res-2' } as any)
+
+      await expectRejected({ seatNumber: 15 })
+    })
+
+    it('rejects an invalid interval when only endTime changes', async () => {
+      await expectRejected(
+        {
+          endTime: '2026-10-10T12:00:00.000Z'
+        },
+        400
+      )
+    })
+
+    it('validates placement when reactivating a cancelled reservation', async () => {
       vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
-        id: 'res-1',
-        status: 'SCHEDULED'
+        ...existingReservation,
+        status: 'CANCELLED'
       } as any)
 
-      vi.mocked(prisma.cbtfReservation.update).mockResolvedValue({
-        id: 'res-1',
-        status: 'CANCELLED',
-        assignment: { title: 'Exam 1' },
-        user: { firstName: 'Alice', lastName: 'Smith', email: 'alice@vt.edu' }
-      } as any)
+      vi.mocked(prisma.cbtfReservation.findFirst).mockResolvedValue({ id: 'res-2' } as any)
 
-      const res = await reservationPatch(event)
+      await expectRejected({ status: 'SCHEDULED' })
+    })
 
-      expect(res.statusCode).toBe(200)
+    it('allows cancellation without revalidating placement', async () => {
+      const result = await reservationPatch(editEvent({ status: 'CANCELLED' }))
+
+      expect(result.statusCode).toBe(200)
+
+      expect(prisma.cbtfFacility.findMany).not.toHaveBeenCalled()
+
       expect(deleteCbtfReservationCanvasOverride).toHaveBeenCalledWith('res-1')
+    })
+
+    it('allows checkout without revalidating placement', async () => {
+      vi.mocked(prisma.cbtfReservation.findUnique).mockResolvedValue({
+        ...existingReservation,
+        status: 'CHECKED_IN'
+      } as any)
+
+      const result = await reservationPatch(editEvent({ status: 'CHECKED_OUT' }))
+
+      expect(result.statusCode).toBe(200)
+
+      expect(prisma.cbtfFacility.findMany).not.toHaveBeenCalled()
+
+      expect(prisma.cbtfReservation.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            status: 'CHECKED_OUT',
+            checkedOutAt: expect.any(Date),
+            checkedOutByUserId: 'admin-1'
+          })
+        })
+      )
+    })
+
+    it('returns conflict when the reservation changes concurrently', async () => {
+      vi.mocked(prisma.cbtfReservation.update).mockRejectedValueOnce({ code: 'P2025' })
+
+      await expect(reservationPatch(editEvent({ seatNumber: 15 }))).rejects.toMatchObject({
+        statusCode: 409
+      })
+
+      expect(syncCbtfReservationCanvasOverride).not.toHaveBeenCalled()
     })
   })
 
