@@ -9,6 +9,9 @@ export const CBTF_DURATION_OPTIONS = [
   { value: 240, label: '4 hours' }
 ]
 
+export const CBTF_DURATION_ERROR =
+  'Select a CBTF exam duration from 30 minutes to 4 hours in 30-minute increments.'
+
 export function isAllowedCbtfDuration(value: unknown): value is number {
   return CBTF_DURATION_OPTIONS.some(option => option.value === value)
 }
@@ -48,7 +51,7 @@ export function getAssignmentSchedulingErrors(
   }
   const duration = config.cbtfDurationMinutes
   if ((required || duration != null) && !isAllowedCbtfDuration(duration)) {
-    errors.push({ name: 'cbtfDurationMinutes', message: 'Select a CBTF exam duration from 30 minutes to 4 hours in 30-minute increments.' })
+    errors.push({ name: 'cbtfDurationMinutes', message: CBTF_DURATION_ERROR })
   } else if (duration != null && config.availableFrom && config.acceptUntil) {
     const length = new Date(config.acceptUntil).getTime() - new Date(config.availableFrom).getTime()
     if ((config.isSchedulable === true || (config.isSchedulable === undefined && config.cbtfDurationMinutes != null)) && length > 0 && length < duration * 60_000) {
